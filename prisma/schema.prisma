@@ -1,0 +1,64 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+model Project {
+  id             String      @id @default(uuid())
+  name           String      @unique
+  rootPath       String
+  languages      String[]    // stored as array of language strings
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  lastIngestedAt DateTime?
+  
+  chunks         CodeChunk[]
+  
+  @@map("projects")
+}
+
+model CodeChunk {
+  id           String   @id @default(uuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  // Location
+  filePath     String   // relative to project root
+  lineStart    Int
+  lineEnd      Int
+  
+  // Content
+  content      String
+  language     String   // apex, lwc, javascript, typescript, python, html, css, xml
+  chunkType    String   // class, method, function, component, trigger, test, interface, file_header
+  
+  // Structure  
+  name         String   // class/function/component name
+  parentName   String?  // containing class for methods
+  dependencies String[] // imports, extends, implements
+  
+  // Embedding - using Unsupported for pgvector
+  embedding        Unsupported("vector(768)")?
+  
+  // Multi-model embeddings for ensemble search
+  embedding_bge    Unsupported("vector(768)")?
+  embedding_nomic  Unsupported("vector(768)")?
+  embedding_gte    Unsupported("vector(768)")?
+  embedding_minilm Unsupported("vector(384)")?
+  
+  // Meta
+  createdAt    DateTime @default(now())
+  checksum     String   // detect changes on re-ingest
+  
+  @@index([projectId])
+  @@index([filePath])
+  @@index([language])
+  @@index([chunkType])
+  @@map("code_chunks")
+}
