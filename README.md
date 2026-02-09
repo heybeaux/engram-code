@@ -60,7 +60,7 @@ curl -X POST http://localhost:3002/v1/projects \
   -d '{
     "name": "my-salesforce-app",
     "rootPath": "/Users/dev/salesforce/my-app",
-    "languages": ["apex", "lwc"]
+    "languages": ["apex", "lwc", "typescript"]
   }'
 ```
 
@@ -138,6 +138,26 @@ curl -X POST http://localhost:3002/v1/search/ensemble \
 ```
 
 ## Language Support
+
+### TypeScript (.ts, .tsx)
+
+The TypeScript parser extracts semantic chunks using the TypeScript compiler API:
+
+| Chunk Type | What's Extracted |
+|------------|------------------|
+| `class` | Classes with decorators, extends/implements |
+| `method` | Methods with access modifiers, parameters, return type |
+| `function` | Exported and top-level functions |
+| `interface` | Interface declarations with properties |
+| `type` | Type alias declarations |
+
+**Metadata extracted:**
+- Decorators (`@Injectable`, `@Controller`, etc.)
+- Export visibility (exported vs internal)
+- Import dependencies
+- JSDoc comments
+
+Better chunking than line-based splitting — classes and their methods are individually searchable while preserving parent-child relationships.
 
 ### Apex (.cls, .trigger)
 
