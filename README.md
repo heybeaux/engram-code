@@ -28,6 +28,16 @@ AI agents need to find relevant code — not by filename, but by meaning:
 **Traditional search:** Grep, exact matches, regex patterns  
 **engram-code:** Natural language queries, semantic understanding, multi-model ensemble
 
+## Prerequisites
+
+engram-code is a NestJS service that depends on two external components you need to provision before running it:
+
+- **PostgreSQL 14+ with the [pgvector](https://github.com/pgvector/pgvector) extension** — stores code chunks and their embeddings.
+- **[engram-embed](https://github.com/heybeaux/engram-embed) running on port 8080** — generates embeddings for ingestion and search. engram-code calls it over HTTP for every chunk and query.
+- **Node.js 20+** and **pnpm**.
+
+You do **not** need the [engram](https://github.com/heybeaux/engram) memory API to run engram-code — it's a sibling service in the ecosystem, not a dependency.
+
 ## Quick Start
 
 ```bash
