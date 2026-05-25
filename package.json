@@ -117,6 +117,22 @@
         "setupFiles": [
           "<rootDir>/v2/parsers/parser-setup.ts"
         ]
+      },
+      {
+        "displayName": "eval",
+        "rootDir": "scripts/eval",
+        "testMatch": [
+          "<rootDir>/**/*.spec.ts"
+        ],
+        "transform": {
+          "^.+\\.(t|j)s$": "ts-jest"
+        },
+        "moduleFileExtensions": [
+          "js",
+          "json",
+          "ts"
+        ],
+        "testEnvironment": "node"
       }
     ]
   }

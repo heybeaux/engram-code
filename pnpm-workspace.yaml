@@ -1,3 +1,5 @@
+packages:
+  - '.'
 ignoreScripts: false
 onlyBuiltDependencies:
   - '@nestjs/core'
