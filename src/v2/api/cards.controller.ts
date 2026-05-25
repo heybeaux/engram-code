@@ -1,18 +1,23 @@
 /**
- * v2 Cards API (EC-15).
+ * v2 Cards API (EC-15 Phase 1 / EC-28 Phase 2).
  *
  * Read-only HTTP endpoints over the markdown card artifacts produced by the
- * synthesis/structure passes (EC-14 writer). Phase 1 is filesystem-only —
- * cards live on disk under `<artifactsRoot>/cards/<conceptPath>.md`. The
- * Postgres `cards` table is the eventual fast path, but Phase 2 work.
+ * synthesis/structure passes (EC-14 writer). Phase 1 was filesystem-only;
+ * Phase 2 (EC-28) extends the per-card GET to return 404 when the requested
+ * LoD has not been generated yet, and introduces the sibling controllers
+ * for `/v1/map`, `/v1/search/concept`, and `/v1/subsystems`.
  *
  * Endpoints:
  *   - `GET /v1/cards` — list every card path under the artifacts root.
- *   - `GET /v1/cards/:path` — fetch one card at a requested LoD.
+ *   - `GET /v1/cards/:path` — fetch one card at a requested LoD; 404 if the
+ *     card file is missing OR if the requested LoD body has not been
+ *     generated (i.e. the section is empty).
  *
  * The `:path` param is slash-delimited (`engram/ingestion/parsers/typescript`)
  * which means clients should URL-encode slashes (`%2F`). NestJS' wildcard
  * route below preserves the original path so callers can use either style.
+ *
+ * OpenAPI tag: `cards`.
  *
  * Spec: docs/specs/engram-code-v2.md §4.6 Query Layer.
  */
@@ -26,11 +31,13 @@ import {
   Param,
   Query,
 } from '@nestjs/common';
-import { promises as fs } from 'node:fs';
-import { join, relative, sep } from 'node:path';
 
-import { cardFilePath, readCard } from '../writers/markdown/writer';
-import type { Card, LoDContent } from '../writers/markdown/types';
+import type { LoDContent } from '../writers/markdown/types';
+import type {
+  CardListResponseDto,
+  CardResponseDto,
+} from './dto';
+import { CardsFsService } from './services/cards-fs.service';
 
 /** Valid `?lod=` query values. Mirrors `LoDContent` keys. */
 const VALID_LODS: readonly (keyof LoDContent)[] = [
@@ -43,72 +50,30 @@ const VALID_LODS: readonly (keyof LoDContent)[] = [
 /** Default LoD if the caller omits `?lod=`. */
 const DEFAULT_LOD: keyof LoDContent = 'summary';
 
-/**
- * Response shape for `GET /v1/cards/:path`.
- *
- * Returns the requested LoD body plus enough metadata for the caller to
- * decide whether to fetch a richer level. `kind` and `conceptPath` are
- * always echoed so the caller doesn't need to parse the path itself.
- */
-export interface CardResponse {
-  conceptPath: string;
-  kind: Card['kind'];
-  lod: keyof LoDContent;
-  content: string;
-  metadata: Record<string, unknown>;
-}
-
-/** Response shape for `GET /v1/cards` (list). */
-export interface CardListResponse {
-  cards: Array<{ conceptPath: string }>;
-  count: number;
-}
-
-/**
- * Resolve the on-disk artifacts root.
- *
- * Configurable via `ENGRAM_ARTIFACTS_ROOT` for tests and multi-repo setups;
- * defaults to `.engram/artifacts` under the process cwd to match the task
- * brief and keep the dev workflow zero-config.
- */
-function resolveArtifactsRoot(): string {
-  const fromEnv = process.env.ENGRAM_ARTIFACTS_ROOT;
-  if (fromEnv && fromEnv.trim() !== '') return fromEnv;
-  return join(process.cwd(), '.engram', 'artifacts');
-}
-
 @Controller('v1/cards')
 export class CardsController {
   private readonly logger = new Logger(CardsController.name);
+
+  constructor(private readonly cardsFs: CardsFsService) {}
 
   /**
    * `GET /v1/cards` — list every card discoverable on disk.
    *
    * Walks `<root>/cards/` and reports the concept path for each `.md` file.
-   * Cheap O(n) scan; Phase 2 will back this with the `cards` table.
+   * Cheap O(n) scan; future revisions will back this with the `cards` table.
    */
   @Get()
-  async list(): Promise<CardListResponse> {
-    const root = resolveArtifactsRoot();
-    const cardsDir = join(root, 'cards');
-
+  async list(): Promise<CardListResponseDto> {
     let conceptPaths: string[];
     try {
-      conceptPaths = await collectConceptPaths(cardsDir);
-    } catch (err: unknown) {
-      // Empty/missing artifacts root is a legitimate "no cards yet" state,
-      // not a server error. Anything else (permission, IO) bubbles as 500.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { cards: [], count: 0 };
-      }
-      this.logger.error(`Failed to list cards under ${cardsDir}`, err as Error);
+      conceptPaths = await this.cardsFs.listConceptPaths();
+    } catch (err) {
+      this.logger.error('Failed to enumerate cards', err as Error);
       throw new HttpException(
         'Failed to enumerate cards',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-
-    conceptPaths.sort();
     return {
       cards: conceptPaths.map((conceptPath) => ({ conceptPath })),
       count: conceptPaths.length,
@@ -120,13 +85,18 @@ export class CardsController {
    *
    * The path segment is a slash-delimited concept identifier. NestJS' `*`
    * wildcard captures the full remainder so paths with multiple segments
-   * (`engram/ingestion/parsers/typescript`) Just Work.
+   * (`engram/ingestion/parsers/typescript`) work transparently.
+   *
+   * Returns 404 when the card file is missing OR when the requested LoD
+   * body has not been generated yet — empty LoD bodies indicate the
+   * synthesizer skipped that tier for this concept, not a successful
+   * "empty answer", so callers should know to fall back to a richer level.
    */
   @Get('*path')
   async get(
     @Param('path') rawPath: string | string[],
     @Query('lod') lodParam?: string,
-  ): Promise<CardResponse> {
+  ): Promise<CardResponseDto> {
     const conceptPath = normalizeConceptPath(rawPath);
     if (conceptPath === '') {
       throw new HttpException(
@@ -136,23 +106,29 @@ export class CardsController {
     }
 
     const lod = validateLod(lodParam);
-    const root = resolveArtifactsRoot();
-    const filePath = cardFilePath(root, conceptPath);
 
-    let card: Card;
+    let card;
     try {
-      card = await readCard(filePath);
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new HttpException(
-          `Card not found: ${conceptPath}`,
-          HttpStatus.NOT_FOUND,
-        );
-      }
-      this.logger.error(`Failed to read card ${filePath}`, err as Error);
+      card = await this.cardsFs.readOne(conceptPath);
+    } catch (err) {
+      this.logger.error(`Failed to read card ${conceptPath}`, err as Error);
       throw new HttpException(
         'Failed to read card',
         HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+    if (card === null) {
+      throw new HttpException(
+        `Card not found: ${conceptPath}`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const content = card.lod[lod] ?? '';
+    if (content.trim() === '') {
+      throw new HttpException(
+        `Card "${conceptPath}" has no "${lod}" LoD generated yet`,
+        HttpStatus.NOT_FOUND,
       );
     }
 
@@ -160,7 +136,7 @@ export class CardsController {
       conceptPath: card.conceptPath,
       kind: card.kind,
       lod,
-      content: card.lod[lod] ?? '',
+      content,
       metadata: card.metadata,
     };
   }
@@ -194,28 +170,4 @@ function validateLod(raw: string | undefined): keyof LoDContent {
     `Invalid lod "${raw}"; must be one of ${VALID_LODS.join('|')}`,
     HttpStatus.BAD_REQUEST,
   );
-}
-
-/**
- * Recursively walk `<root>/cards/` and return concept paths for every `.md`
- * file found, relative to the cards dir and POSIX-normalized.
- */
-async function collectConceptPaths(cardsDir: string): Promise<string[]> {
-  const out: string[] = [];
-
-  async function walk(dir: string): Promise<void> {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const abs = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(abs);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        const rel = relative(cardsDir, abs).split(sep).join('/');
-        out.push(rel.slice(0, -3)); // strip .md
-      }
-    }
-  }
-
-  await walk(cardsDir);
-  return out;
 }
