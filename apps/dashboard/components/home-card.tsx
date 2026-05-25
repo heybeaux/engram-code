@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, EngramCodeApi } from '@/lib/api';
 import type { CardResponse, LodLevel } from '@/lib/schemas';
+import { useLodPersistence } from '@/lib/use-lod-persistence';
 import { CardView } from './card-view';
-import { LodSwitcher } from './lod-switcher';
 
 const REPO_PATH = '.';
 
@@ -20,7 +20,7 @@ type CardState =
   | { status: 'success'; card: CardResponse };
 
 export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
-  const [lod, setLod] = useState<LodLevel>(initialLod);
+  const [lod, setLod] = useLodPersistence(initialLod);
   const [state, setState] = useState<CardState>({ status: 'loading' });
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -52,16 +52,13 @@ export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
 
   return (
     <section className="flex flex-col gap-12">
-      <header className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="font-mono text-xs uppercase tracking-[0.25em] text-stone-400">
-            engram-code
-          </p>
-          <h1 className="mt-2 font-serif text-3xl tracking-tight text-stone-900 sm:text-4xl">
-            What is this codebase?
-          </h1>
-        </div>
-        <LodSwitcher value={lod} onChange={setLod} />
+      <header>
+        <p className="font-mono text-xs uppercase tracking-[0.25em] text-stone-400">
+          engram-code
+        </p>
+        <h1 className="mt-2 font-serif text-3xl tracking-tight text-stone-900 sm:text-4xl">
+          What is this codebase?
+        </h1>
       </header>
 
       <div className="min-h-[24rem]">
@@ -70,7 +67,9 @@ export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
         {state.status === 'error' && (
           <ErrorState message={state.message} onRetry={retry} />
         )}
-        {state.status === 'success' && <CardView card={state.card} />}
+        {state.status === 'success' && (
+          <CardView card={state.card} lod={lod} onLodChange={setLod} />
+        )}
       </div>
     </section>
   );

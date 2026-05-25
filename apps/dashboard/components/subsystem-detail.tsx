@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, EngramCodeApi } from '@/lib/api';
 import type { CardResponse, LodLevel } from '@/lib/schemas';
+import { useLodPersistence } from '@/lib/use-lod-persistence';
 import { CardView } from './card-view';
-import { LodSwitcher } from './lod-switcher';
 
 interface SubsystemDetailProps {
   slug: string;
@@ -24,7 +24,7 @@ export function SubsystemDetail({
   initialLod = 'standard',
   client,
 }: SubsystemDetailProps) {
-  const [lod, setLod] = useState<LodLevel>(initialLod);
+  const [lod, setLod] = useLodPersistence(initialLod);
   const [state, setState] = useState<CardState>({ status: 'loading' });
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -71,16 +71,13 @@ export function SubsystemDetail({
             {slug}
           </h1>
         </div>
-        <div className="flex flex-col items-stretch gap-3 sm:items-end">
-          <LodSwitcher value={lod} onChange={setLod} />
-          <Link
-            href={mapHref}
-            data-testid="open-in-repo-map"
-            className="self-end rounded-full border border-stone-300 px-4 py-1.5 text-xs font-medium uppercase tracking-[0.15em] text-stone-600 transition-colors hover:border-stone-500 hover:text-stone-900"
-          >
-            Open in repo map →
-          </Link>
-        </div>
+        <Link
+          href={mapHref}
+          data-testid="open-in-repo-map"
+          className="self-end rounded-full border border-stone-300 px-4 py-1.5 text-xs font-medium uppercase tracking-[0.15em] text-stone-600 transition-colors hover:border-stone-500 hover:text-stone-900"
+        >
+          Open in repo map →
+        </Link>
       </header>
 
       <div className="min-h-[24rem]">
@@ -89,7 +86,9 @@ export function SubsystemDetail({
         {state.status === 'error' && (
           <ErrorState message={state.message} onRetry={retry} />
         )}
-        {state.status === 'success' && <CardView card={state.card} />}
+        {state.status === 'success' && (
+          <CardView card={state.card} lod={lod} onLodChange={setLod} />
+        )}
       </div>
     </section>
   );
