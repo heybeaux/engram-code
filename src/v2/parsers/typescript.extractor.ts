@@ -206,6 +206,7 @@ function unwrapExport(node: SyntaxNode): {
     node.namedChildren.find(
       (c) =>
         c.type === 'function_declaration' ||
+        c.type === 'function_expression' ||
         c.type === 'class_declaration' ||
         c.type === 'interface_declaration' ||
         c.type === 'lexical_declaration' ||
@@ -217,6 +218,150 @@ function unwrapExport(node: SyntaxNode): {
     exported: true,
     isDefault,
   };
+}
+
+/**
+ * Walk a binding pattern (`identifier`, `object_pattern`, `array_pattern`,
+ * `rest_pattern`, or an `assignment_pattern` defaulting onto one of those)
+ * and collect every bound identifier name. Used to expand
+ * `export const { a, b: { c } } = ...` and `export const [x, ...rest] = ...`
+ * into one symbol per binding.
+ */
+function collectBindingNames(node: SyntaxNode, out: string[]): void {
+  switch (node.type) {
+    case 'identifier':
+    case 'shorthand_property_identifier_pattern':
+      out.push(node.text);
+      return;
+    case 'assignment_pattern': {
+      // `{ a = 1 }` or `[x = 0]` — the binding is the left side.
+      const left = node.childForFieldName('left') ?? node.namedChild(0);
+      if (left) collectBindingNames(left, out);
+      return;
+    }
+    case 'rest_pattern':
+      for (const c of node.namedChildren) collectBindingNames(c, out);
+      return;
+    case 'pair_pattern': {
+      // `{ key: binding }` — only the value side introduces a new binding.
+      const value = node.childForFieldName('value') ?? node.namedChild(1);
+      if (value) collectBindingNames(value, out);
+      return;
+    }
+    case 'object_pattern':
+    case 'array_pattern':
+      for (const c of node.namedChildren) collectBindingNames(c, out);
+      return;
+    default:
+      // Unknown binding form — recurse defensively so we don't silently drop
+      // anything, but cap to named children to avoid pulling in expression
+      // initializers.
+      for (const c of node.namedChildren) collectBindingNames(c, out);
+  }
+}
+
+/**
+ * Handle the body of an `export_statement` that doesn't wrap a normal
+ * declaration we already collect elsewhere. Emits one `export` node per
+ * surfaced identifier so downstream consumers see bare binding names
+ * rather than raw source text.
+ *
+ * Covers:
+ *   - `export const X = ...` / `export let a, b`
+ *   - `export const { a, b } = ...` and `export const [x] = ...`
+ *   - `export { a, b, c as d }` (the alias is what's externally visible)
+ *   - `export { x } from './foo'` (re-export of a specifier)
+ *   - `export * from './foo'` (namespace re-export, emitted as `*`)
+ *   - `export default <expr>` where the expression isn't a named declaration
+ *   - `export type Foo = ...` / `export enum E { ... }`
+ */
+function collectExportStatement(
+  ctx: ParseContext,
+  exportNode: SyntaxNode,
+  isDefault: boolean,
+): void {
+  // 1. Anonymous `export default <expr>` — surface as `default`.
+  if (isDefault) {
+    pushNode(ctx, 'export', 'default', exportNode, ctx.moduleName, {
+      default: true,
+    });
+    return;
+  }
+
+  // 2. `export * from './foo'` — no export_clause, but a source string.
+  const source = exportNode.childForFieldName('source');
+  const hasClause = exportNode.namedChildren.some(
+    (c) => c.type === 'export_clause',
+  );
+  if (source && !hasClause) {
+    pushNode(ctx, 'export', '*', exportNode, ctx.moduleName, {
+      source: stripStringQuotes(source.text),
+      reexport: true,
+    });
+    return;
+  }
+
+  // 3. `export { a, b, c as d }` or `export { x } from './foo'`.
+  for (const clause of exportNode.namedChildren) {
+    if (clause.type !== 'export_clause') continue;
+    for (const spec of clause.namedChildren) {
+      if (spec.type !== 'export_specifier') continue;
+      // `name` is the original identifier; `alias` (when present) is what
+      // the consumer sees. The exported symbol is the alias if given.
+      const aliasNode = spec.childForFieldName('alias');
+      const nameNode = spec.childForFieldName('name');
+      const exportedName =
+        aliasNode?.text ?? nameNode?.text ?? spec.namedChild(0)?.text;
+      if (!exportedName) continue;
+      const metadata: Record<string, unknown> = {};
+      if (source) metadata.source = stripStringQuotes(source.text);
+      if (source) metadata.reexport = true;
+      pushNode(
+        ctx,
+        'export',
+        exportedName,
+        spec,
+        ctx.moduleName,
+        Object.keys(metadata).length > 0 ? metadata : undefined,
+      );
+    }
+  }
+
+  // Type-alias and enum exports: `export type Foo = ...`, `export enum E {}`.
+  for (const child of exportNode.namedChildren) {
+    if (
+      child.type === 'type_alias_declaration' ||
+      child.type === 'enum_declaration'
+    ) {
+      const nameNode = child.childForFieldName('name') ?? child.namedChild(0);
+      if (nameNode) {
+        pushNode(ctx, 'export', nameNode.text, child, ctx.moduleName);
+      }
+    }
+  }
+
+  // 4. `export const X = ...` / `export let a, b` / destructured exports.
+  //    The wrapped `lexical_declaration` / `variable_declaration` shows up
+  //    as a sibling rather than via the `declaration` field for some
+  //    grammar variants; collect from both spots.
+  const decl =
+    exportNode.childForFieldName('declaration') ??
+    exportNode.namedChildren.find(
+      (c) =>
+        c.type === 'lexical_declaration' || c.type === 'variable_declaration',
+    );
+  if (decl && (decl.type === 'lexical_declaration' || decl.type === 'variable_declaration')) {
+    for (const declarator of decl.namedChildren) {
+      if (declarator.type !== 'variable_declarator') continue;
+      const nameField = declarator.childForFieldName('name') ?? declarator.namedChild(0);
+      if (!nameField) continue;
+      const names: string[] = [];
+      collectBindingNames(nameField, names);
+      for (const name of names) {
+        pushNode(ctx, 'export', name, declarator, ctx.moduleName);
+      }
+    }
+  }
 }
 
 function collectFunctionDeclaration(
@@ -304,6 +449,7 @@ function collectTopLevel(ctx: ParseContext, program: SyntaxNode): void {
 
     switch (inner.type) {
       case 'function_declaration':
+      case 'function_expression':
         collectFunctionDeclaration(ctx, inner, exported, isDefault);
         break;
       case 'class_declaration':
@@ -313,10 +459,16 @@ function collectTopLevel(ctx: ParseContext, program: SyntaxNode): void {
         collectInterfaceDeclaration(ctx, inner, exported);
         break;
       default:
-        // `export { foo } from './x'` style re-exports surface here with an
-        // inner that's still the export_statement (no `declaration` field).
+        // Export forms that don't wrap a function/class/interface land here:
+        //   - `export const X = ...` / `export let a, b`
+        //   - `export { a, b, c as d }` / `export { x } from './foo'`
+        //   - `export * from './foo'`
+        //   - `export default <expr>` for anonymous expressions
+        //   - `export type Foo = ...` / `export enum E { ... }`
+        // We emit one `export` node per surfaced identifier so consumers
+        // see a bare binding name rather than raw source text.
         if (exported && raw.type === 'export_statement') {
-          pushNode(ctx, 'export', raw.text.slice(0, 80), raw, ctx.moduleName);
+          collectExportStatement(ctx, raw, isDefault);
         }
         break;
     }
