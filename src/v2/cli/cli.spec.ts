@@ -311,4 +311,60 @@ describe('engram-code CLI', () => {
       expect(cards).toHaveLength(0);
     });
   });
+
+  describe('config command (EC-27)', () => {
+    it('config show prints resolved defaults when no config file exists', async () => {
+      const cap = captureIO();
+      mkdirSync(join(workdir, '.git'));
+      const code = await run(['config', 'show', workdir], cap.io);
+      expect(code).toBe(EXIT.OK);
+      expect(cap.out).toContain('<built-in defaults>');
+      expect(cap.out).toContain('"passes"');
+      expect(cap.out).toContain('"intent"');
+    });
+
+    it('config show surfaces values from .engram/config.yaml', async () => {
+      const cap = captureIO();
+      mkdirSync(join(workdir, '.git'));
+      mkdirSync(join(workdir, '.engram'));
+      writeFileSync(
+        join(workdir, '.engram', 'config.yaml'),
+        'passes:\n  intent:\n    model: custom/intent-model\n',
+        'utf8',
+      );
+      const code = await run(['config', 'show', workdir], cap.io);
+      expect(code).toBe(EXIT.OK);
+      expect(cap.out).toContain('config.yaml');
+      expect(cap.out).toContain('"custom/intent-model"');
+    });
+
+    it('config show exits with 70 on malformed config', async () => {
+      const cap = captureIO();
+      mkdirSync(join(workdir, '.git'));
+      mkdirSync(join(workdir, '.engram'));
+      writeFileSync(
+        join(workdir, '.engram', 'config.yaml'),
+        'passes:\n  intent:\n    bogus: yes\n',
+        'utf8',
+      );
+      const code = await run(['config', 'show', workdir], cap.io);
+      expect(code).toBe(EXIT.RUNTIME);
+      expect(cap.err).toContain('invalid config');
+    });
+
+    it('config show rejects unknown subcommands', async () => {
+      const cap = captureIO();
+      const code = await run(['config', 'wat'], cap.io);
+      expect(code).toBe(EXIT.USAGE);
+      expect(cap.err).toContain('unknown subcommand');
+    });
+
+    it('config show errors when repo path does not exist', async () => {
+      const cap = captureIO();
+      const missing = join(workdir, 'definitely-missing');
+      const code = await run(['config', 'show', missing], cap.io);
+      expect(code).toBe(EXIT.NOT_FOUND);
+      expect(cap.err).toContain('repo path not found');
+    });
+  });
 });

@@ -22,6 +22,7 @@
 import { promises as fs } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
+import { ConfigError, loadConfig } from '../config';
 import { runStructurePass } from '../passes/structure/orchestrator';
 import type { StructurePassResult } from '../passes/structure/orchestrator';
 import { registerGoExtractor } from '../parsers/go.extractor';
@@ -74,6 +75,8 @@ export async function run(argv: string[], io: CliIO = DEFAULT_IO): Promise<numbe
       return runIndex(rest, io);
     case 'cards':
       return runCards(rest, io);
+    case 'config':
+      return runConfig(rest, io);
     default:
       io.stderr(`engram-code: unknown command "${command}"\n${usage()}`);
       return EXIT.USAGE;
@@ -87,6 +90,7 @@ function usage(): string {
     'Usage:',
     '  engram-code index <repo-path> [--out=<dir>] [--repo-id=<id>] [--quiet|--verbose]',
     '  engram-code cards <conceptPath> [--lod=summary] [--root=<dir>]',
+    '  engram-code config show <repo-path> [--config=<file>]',
     '',
     'Options:',
     '  --out=<dir>     Artifacts root for `index` (default: <repo>/.engram/artifacts)',
@@ -95,6 +99,7 @@ function usage(): string {
     '  --verbose       Include parser id and first stack line on per-file parse-error lines',
     '  --root=<dir>    Artifacts root for `cards` (default: $ENGRAM_ARTIFACTS_ROOT or ./.engram/artifacts)',
     '  --lod=<level>   One of index|summary|standard|deep (default: summary)',
+    '  --config=<file> Explicit `.engram/config.yaml` path for `config show`',
     '',
   ].join('\n');
 }
@@ -415,6 +420,82 @@ function defaultCardsRoot(): string {
   const fromEnv = process.env.ENGRAM_ARTIFACTS_ROOT;
   if (fromEnv && fromEnv.trim() !== '') return fromEnv;
   return join(process.cwd(), '.engram', 'artifacts');
+}
+
+// ─── `engram-code config show` ───────────────────────────────────────────
+
+interface ConfigShowArgs {
+  repoPath: string;
+  configPath?: string;
+}
+
+async function runConfig(argv: string[], io: CliIO): Promise<number> {
+  const [sub, ...rest] = argv;
+  if (sub !== 'show') {
+    io.stderr(
+      `engram-code config: unknown subcommand "${sub ?? ''}"\n${usage()}`,
+    );
+    return EXIT.USAGE;
+  }
+
+  let parsed: ConfigShowArgs;
+  try {
+    parsed = parseConfigShowArgs(rest);
+  } catch (err) {
+    io.stderr(`engram-code config show: ${(err as Error).message}\n${usage()}`);
+    return EXIT.USAGE;
+  }
+
+  const repoPath = resolve(parsed.repoPath);
+  try {
+    const stat = await fs.stat(repoPath);
+    if (!stat.isDirectory()) {
+      io.stderr(`engram-code config show: not a directory: ${repoPath}\n`);
+      return EXIT.USAGE;
+    }
+  } catch {
+    io.stderr(`engram-code config show: repo path not found: ${repoPath}\n`);
+    return EXIT.NOT_FOUND;
+  }
+
+  try {
+    const result = await loadConfig({
+      startDir: repoPath,
+      explicitPath: parsed.configPath,
+    });
+    io.stdout(
+      `# source: ${result.source ?? '<built-in defaults>'}\n${JSON.stringify(result.config, null, 2)}\n`,
+    );
+    return EXIT.OK;
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      io.stderr(`engram-code config show: ${err.message}\n`);
+      return EXIT.RUNTIME;
+    }
+    io.stderr(
+      `engram-code config show: unexpected error: ${(err as Error).message}\n`,
+    );
+    return EXIT.RUNTIME;
+  }
+}
+
+function parseConfigShowArgs(argv: string[]): ConfigShowArgs {
+  let repoPath: string | undefined;
+  let configPath: string | undefined;
+
+  for (const arg of argv) {
+    if (arg.startsWith('--config=')) {
+      configPath = arg.slice('--config='.length);
+    } else if (arg.startsWith('--')) {
+      throw new Error(`unknown flag "${arg}"`);
+    } else if (!repoPath) {
+      repoPath = arg;
+    } else {
+      throw new Error(`unexpected positional argument "${arg}"`);
+    }
+  }
+  if (!repoPath) throw new Error('missing required <repo-path>');
+  return { repoPath, configPath };
 }
 
 // Re-export for the bin shim and tests.
