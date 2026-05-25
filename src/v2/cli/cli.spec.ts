@@ -155,6 +155,76 @@ describe('engram-code CLI', () => {
       expect(cap.err).toContain('missing required <repo-path>');
     });
 
+    describe('parse-error reporting (EC-19)', () => {
+      // The TS extractor recovers from syntax errors and pushes one or more
+      // entries onto `parseErrors`; we lean on that real behavior here so the
+      // CLI's reporting path is exercised end-to-end through `runStructurePass`.
+      function buildBrokenRepo(): { repoPath: string; outDir: string } {
+        const repoPath = join(workdir, 'broken-repo');
+        mkdirSync(repoPath, { recursive: true });
+        writeFileSync(
+          join(repoPath, 'broken.ts'),
+          'function broken(x: number {\n  return ;\n',
+          'utf8',
+        );
+        return { repoPath, outDir: join(workdir, 'broken-artifacts') };
+      }
+
+      it('prints one parse-error line per file by default', async () => {
+        const { repoPath, outDir } = buildBrokenRepo();
+        const cap = captureIO();
+        const code = await run(
+          ['index', repoPath, `--out=${outDir}`, '--repo-id=broken'],
+          cap.io,
+        );
+        expect(code).toBe(EXIT.OK);
+        expect(cap.err).toMatch(/parse-error broken\.ts:/);
+        // Summary tally is preserved alongside the per-file detail.
+        expect(cap.err).toMatch(/file\(s\) had parse errors/);
+      });
+
+      it('--quiet suppresses per-file lines but keeps the summary', async () => {
+        const { repoPath, outDir } = buildBrokenRepo();
+        const cap = captureIO();
+        const code = await run(
+          ['index', repoPath, `--out=${outDir}`, '--repo-id=broken', '--quiet'],
+          cap.io,
+        );
+        expect(code).toBe(EXIT.OK);
+        expect(cap.err).not.toMatch(/parse-error broken\.ts/);
+        expect(cap.err).toMatch(/file\(s\) had parse errors/);
+      });
+
+      it('--verbose includes the parser id on each line', async () => {
+        const { repoPath, outDir } = buildBrokenRepo();
+        const cap = captureIO();
+        const code = await run(
+          ['index', repoPath, `--out=${outDir}`, '--repo-id=broken', '--verbose'],
+          cap.io,
+        );
+        expect(code).toBe(EXIT.OK);
+        expect(cap.err).toMatch(/parse-error \[typescript\] broken\.ts:/);
+      });
+
+      it('rejects --quiet and --verbose together', async () => {
+        const { repoPath, outDir } = buildBrokenRepo();
+        const cap = captureIO();
+        const code = await run(
+          [
+            'index',
+            repoPath,
+            `--out=${outDir}`,
+            '--repo-id=broken',
+            '--quiet',
+            '--verbose',
+          ],
+          cap.io,
+        );
+        expect(code).toBe(EXIT.USAGE);
+        expect(cap.err).toContain('mutually exclusive');
+      });
+    });
+
     it('walks a repo and writes stub cards + INDEX.md', async () => {
       // Build a tiny TS repo. We only need enough source to produce at
       // least one structural node; the structure pass picks it up via
