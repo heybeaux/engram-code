@@ -21,6 +21,8 @@ model Project {
   chunks         CodeChunk[]
   cards          Card[]
   graphEdges     GraphEdge[]
+  subsystems     Subsystem[]
+  passRuns       PassRun[]
 
   @@map("projects")
 }
@@ -34,11 +36,26 @@ enum Lod {
   DEEP
 }
 
+enum CardLevel {
+  REPOSITORY
+  SUBSYSTEM
+  MODULE
+  CAPABILITY
+}
+
 enum EdgeType {
   CONTAINS
   IMPORTS
   CALLS
   EXTENDS
+}
+
+enum PassRunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
 }
 
 /// LoD synthesis output for v2 multi-pass pipeline.
@@ -51,7 +68,20 @@ model Card {
   /// Hierarchical concept path, e.g. "engram-code/src/ingestion/parsers/typescript-parser"
   conceptPath  String
   lod          Lod
+
+  /// Hierarchical level — repository|subsystem|module|capability.
+  /// Phase 2 introduces this so callers can filter `GET /v1/map?level=subsystem`.
+  level        CardLevel                     @default(MODULE)
+
   content      String                        // markdown body
+
+  /// Which pass produced this card (e.g. "intent", "synthesis", "contracts").
+  /// Used by the conductor to invalidate downstream cards when an upstream
+  /// pass re-runs.
+  sourcePass   String?
+
+  /// Approximate token count for budget accounting + LoD validation.
+  tokenCount   Int?
 
   /// Optional embedding for semantic search over cards (pgvector).
   embedding    Unsupported("vector(768)")?
@@ -61,7 +91,79 @@ model Card {
 
   @@unique([repoId, conceptPath, lod])
   @@index([conceptPath])
+  @@index([repoId, level])
   @@map("cards")
+}
+
+/// Discovered subsystems — clusters of modules grouped by import topology +
+/// intent similarity (Pass 2). Named by LLM via subsystem detector (EC-25).
+model Subsystem {
+  id                  String   @id @default(uuid())
+  repoId              String
+  project             Project  @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  /// Human-facing name (e.g. "Auth", "Ingestion Pipeline"). Set by EC-25 namer.
+  name                String
+
+  /// URL/path-safe slug derived from name. Used in cards.conceptPath
+  /// (e.g. "engram-code/subsystems/auth"). Unique within a repo.
+  slug                String
+
+  /// One-line description (~120 chars). Long-form lives in the subsystem card.
+  description         String?
+
+  /// Concept paths of member modules (e.g. "engram-code/src/v2/passes/intent").
+  /// Kept denormalized for fast lookup; source of truth is the clustering
+  /// algorithm output snapshotted at detection time.
+  memberModulePaths   String[]
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([repoId, slug])
+  @@index([repoId])
+  @@map("subsystems")
+}
+
+/// Observability + budget ledger. One row per pass invocation (per repo, per
+/// run). The conductor writes a row when a pass starts and updates it on
+/// completion. Enables: cost dashboards, retry decisions, drift detection.
+model PassRun {
+  id              String         @id @default(uuid())
+  repoId          String
+  project         Project        @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  /// Pass identifier — "structure", "intent", "contracts", "gotchas",
+  /// "subsystem", "synthesis-module", "synthesis-subsystem",
+  /// "synthesis-repository". Free-form string to allow new passes without
+  /// migration.
+  passName        String
+
+  status          PassRunStatus  @default(PENDING)
+
+  /// Hash of the pass inputs (e.g. structure graph + source SHA). Lets us
+  /// skip re-runs when nothing changed.
+  inputHash       String?
+
+  /// Hash of the pass output for change-detection downstream.
+  outputHash      String?
+
+  /// Model identifier (e.g. "claude-sonnet-4-6", "gemini-flash"). NULL for
+  /// mechanical passes (structure).
+  model           String?
+
+  /// Token spend for this run. Mechanical passes report 0.
+  tokenCost       Int?
+
+  /// Error string when status=FAILED.
+  errorMessage    String?
+
+  startedAt       DateTime       @default(now())
+  finishedAt      DateTime?
+
+  @@index([repoId, passName, startedAt])
+  @@index([repoId, status])
+  @@map("pass_runs")
 }
 
 /// Typed edges between concept paths — the structure graph.

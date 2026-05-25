@@ -3,3 +3,7 @@ node_modules
 .env
 
 /generated/prisma
+
+# Compiled output — rebuilt by `pnpm build`; not source-of-truth.
+dist/
+coverage/
