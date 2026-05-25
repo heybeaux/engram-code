@@ -1,5 +1,5 @@
 /**
- * Tests for the v2 Cards API (EC-15).
+ * Tests for the v2 Cards API (EC-15 + EC-28).
  *
  * Spins up a real NestJS testing module per spec and points the controller
  * at a per-test tmpdir via `ENGRAM_ARTIFACTS_ROOT`. We use the real markdown
@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { writeCard } from '../writers/markdown/writer';
 import type { Card } from '../writers/markdown/types';
 import { CardsController } from './cards.controller';
+import { CardsFsService } from './services/cards-fs.service';
 
 describe('CardsController', () => {
   let workdir: string;
@@ -29,6 +30,7 @@ describe('CardsController', () => {
 
     const moduleRef = await Test.createTestingModule({
       controllers: [CardsController],
+      providers: [CardsFsService],
     }).compile();
     controller = moduleRef.get(CardsController);
   });
@@ -131,6 +133,36 @@ describe('CardsController', () => {
       await expect(controller.get('does/not/exist')).rejects.toMatchObject({
         status: HttpStatus.NOT_FOUND,
       });
+    });
+
+    it('throws 404 when the requested LoD body is empty (not generated)', async () => {
+      // EC-28: synthesizer may skip a LoD tier for trivial concepts. Empty
+      // body → 404 so callers fall back to a richer level instead of
+      // silently rendering nothing.
+      await writeCard(
+        workdir,
+        fixtureCard({
+          conceptPath: 'engram/sparse/card',
+          lod: { index: 'i', summary: 's', standard: 'std', deep: '' },
+        }),
+      );
+      await expect(
+        controller.get('engram/sparse/card', 'deep'),
+      ).rejects.toMatchObject({ status: HttpStatus.NOT_FOUND });
+    });
+
+    it('returns cards at every level (kind)', async () => {
+      const levels = ['repository', 'subsystem', 'module', 'capability'] as const;
+      for (const kind of levels) {
+        await writeCard(
+          workdir,
+          fixtureCard({ conceptPath: `level/${kind}`, kind }),
+        );
+      }
+      for (const kind of levels) {
+        const res = await controller.get(`level/${kind}`);
+        expect(res.kind).toBe(kind);
+      }
     });
 
     it('throws 400 for an empty concept path', async () => {
