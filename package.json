@@ -5,6 +5,9 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
+  "bin": {
+    "engram-code": "dist/bin/engram-code.js"
+  },
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -13,7 +16,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node --max-old-space-size=4096 dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
+    "test": "jest --forceExit",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
@@ -32,6 +35,10 @@
     "prisma": "^6.19.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
@@ -60,20 +67,27 @@
     "typescript-eslint": "^8.20.0"
   },
   "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "projects": [
+      {
+        "displayName": "parsers",
+        "rootDir": "src",
+        "testMatch": ["<rootDir>/v2/parsers/**/*.spec.ts"],
+        "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+        "moduleFileExtensions": ["js", "json", "ts"],
+        "testEnvironment": "node",
+        "setupFiles": ["<rootDir>/v2/parsers/parser-setup.ts"]
+      },
+      {
+        "displayName": "unit",
+        "rootDir": "src",
+        "testMatch": ["<rootDir>/**/*.spec.ts"],
+        "testPathIgnorePatterns": ["<rootDir>/v2/parsers/"],
+        "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+        "moduleFileExtensions": ["js", "json", "ts"],
+        "collectCoverageFrom": ["**/*.(t|j)s"],
+        "coverageDirectory": "../coverage",
+        "testEnvironment": "node"
+      }
+    ]
   }
 }

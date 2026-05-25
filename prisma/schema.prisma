@@ -17,10 +17,74 @@ model Project {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   lastIngestedAt DateTime?
-  
+
   chunks         CodeChunk[]
-  
+  cards          Card[]
+  graphEdges     GraphEdge[]
+
   @@map("projects")
+}
+
+// ----- v2 multi-pass codebase understanding -----
+
+enum Lod {
+  INDEX
+  SUMMARY
+  STANDARD
+  DEEP
+}
+
+enum EdgeType {
+  CONTAINS
+  IMPORTS
+  CALLS
+  EXTENDS
+}
+
+/// LoD synthesis output for v2 multi-pass pipeline.
+/// One row per (repo, conceptPath, lod) — a card at a specific level of detail.
+model Card {
+  id           String                        @id @default(uuid())
+  repoId       String
+  project      Project                       @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  /// Hierarchical concept path, e.g. "engram-code/src/ingestion/parsers/typescript-parser"
+  conceptPath  String
+  lod          Lod
+  content      String                        // markdown body
+
+  /// Optional embedding for semantic search over cards (pgvector).
+  embedding    Unsupported("vector(768)")?
+
+  createdAt    DateTime                      @default(now())
+  updatedAt    DateTime                      @updatedAt
+
+  @@unique([repoId, conceptPath, lod])
+  @@index([conceptPath])
+  @@map("cards")
+}
+
+/// Typed edges between concept paths — the structure graph.
+/// fromPath/toPath reference concept paths (not card ids) because edges may
+/// be discovered during the structure pass before any cards exist.
+model GraphEdge {
+  id         String   @id @default(uuid())
+  repoId     String
+  project    Project  @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  fromPath   String
+  toPath     String
+  edgeType   EdgeType
+
+  /// Parser-specific extra info (e.g. named vs default import, call site).
+  metadata   Json?
+
+  createdAt  DateTime @default(now())
+
+  @@index([repoId, fromPath])
+  @@index([repoId, toPath])
+  @@index([repoId, edgeType])
+  @@map("graph_edges")
 }
 
 model CodeChunk {
