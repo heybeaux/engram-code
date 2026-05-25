@@ -85,12 +85,14 @@ function usage(): string {
     'engram-code — LoD card generator for codebases (v2 Phase 1)',
     '',
     'Usage:',
-    '  engram-code index <repo-path> [--out=<dir>] [--repo-id=<id>]',
+    '  engram-code index <repo-path> [--out=<dir>] [--repo-id=<id>] [--quiet|--verbose]',
     '  engram-code cards <conceptPath> [--lod=summary] [--root=<dir>]',
     '',
     'Options:',
     '  --out=<dir>     Artifacts root for `index` (default: <repo>/.engram/artifacts)',
     '  --repo-id=<id>  Repo identifier stamped into card metadata (default: dir name)',
+    '  --quiet         Suppress per-file parse-error lines; keep summary count only',
+    '  --verbose       Include parser id and first stack line on per-file parse-error lines',
     '  --root=<dir>    Artifacts root for `cards` (default: $ENGRAM_ARTIFACTS_ROOT or ./.engram/artifacts)',
     '  --lod=<level>   One of index|summary|standard|deep (default: summary)',
     '',
@@ -103,6 +105,8 @@ interface IndexArgs {
   repoPath: string;
   outDir?: string;
   repoId?: string;
+  quiet?: boolean;
+  verbose?: boolean;
 }
 
 async function runIndex(argv: string[], io: CliIO): Promise<number> {
@@ -149,6 +153,27 @@ async function runIndex(argv: string[], io: CliIO): Promise<number> {
     `engram-code: walked ${result.filesWalked} files, parsed ${result.filesParsed}, ${result.nodes.length} nodes, ${result.edges.length} edges\n`,
   );
   if (result.fileErrors.length > 0) {
+    // Per-file detail (EC-19). The previous behavior — a single summary line
+    // — turned out to be useless when debugging which file actually broke;
+    // we now stream one line per error to stderr by default. `--quiet`
+    // restores the old summary-only output, `--verbose` adds the parser id
+    // and the first line of any embedded stack trace.
+    if (!parsed.quiet) {
+      for (const fileErr of result.fileErrors) {
+        for (const message of fileErr.errors) {
+          const firstLine = message.split('\n', 1)[0] ?? '';
+          if (parsed.verbose) {
+            io.stderr(
+              `engram-code: parse-error [${fileErr.language}] ${fileErr.filePath}: ${firstLine}\n`,
+            );
+          } else {
+            io.stderr(
+              `engram-code: parse-error ${fileErr.filePath}: ${firstLine}\n`,
+            );
+          }
+        }
+      }
+    }
     io.stderr(
       `engram-code: ${result.fileErrors.length} file(s) had parse errors (continuing)\n`,
     );
@@ -175,11 +200,15 @@ function parseIndexArgs(argv: string[]): IndexArgs {
   let repoPath: string | undefined;
   let outDir: string | undefined;
   let repoId: string | undefined;
+  let quiet = false;
+  let verbose = false;
 
   for (const arg of argv) {
     if (arg.startsWith('--out=')) outDir = arg.slice('--out='.length);
     else if (arg.startsWith('--repo-id='))
       repoId = arg.slice('--repo-id='.length);
+    else if (arg === '--quiet') quiet = true;
+    else if (arg === '--verbose') verbose = true;
     else if (arg.startsWith('--')) {
       throw new Error(`unknown flag "${arg}"`);
     } else if (!repoPath) repoPath = arg;
@@ -188,7 +217,10 @@ function parseIndexArgs(argv: string[]): IndexArgs {
   if (!repoPath) {
     throw new Error('missing required <repo-path>');
   }
-  return { repoPath, outDir, repoId };
+  if (quiet && verbose) {
+    throw new Error('--quiet and --verbose are mutually exclusive');
+  }
+  return { repoPath, outDir, repoId, quiet, verbose };
 }
 
 let extractorsRegistered = false;

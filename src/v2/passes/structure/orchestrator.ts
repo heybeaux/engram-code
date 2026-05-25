@@ -40,8 +40,12 @@ export interface StructurePassResult {
   /**
    * Files where the extractor reported one or more `parseErrors`.
    * Each entry's `errors` array is the raw extractor output.
+   *
+   * `language` is the logical language id from {@link ParseResult.language}
+   * (e.g. `typescript`, `python`) so CLI callers can attribute the failure to
+   * a specific extractor without re-deriving it from the file extension.
    */
-  fileErrors: Array<{ filePath: string; errors: string[] }>;
+  fileErrors: Array<{ filePath: string; language: string; errors: string[] }>;
 }
 
 /**
@@ -107,6 +111,7 @@ export async function runStructurePass(
     if (result.parseErrors.length > 0) {
       fileErrors.push({
         filePath: toRepoRelative(repoPath, result.filePath),
+        language: result.language,
         errors: result.parseErrors,
       });
     }
