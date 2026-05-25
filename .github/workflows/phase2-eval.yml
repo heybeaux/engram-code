@@ -40,7 +40,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run harness unit + integration tests
-        run: pnpm test --selectProjects eval
+        run: pnpm test -- --selectProjects eval
 
       - name: Run mock-LLM eval (validates wiring; not a semantic pass/fail)
         run: |
