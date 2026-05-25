@@ -13,7 +13,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node --max-old-space-size=4096 dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
+    "test": "jest --forceExit",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
@@ -64,20 +64,27 @@
     "typescript-eslint": "^8.20.0"
   },
   "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "projects": [
+      {
+        "displayName": "parsers",
+        "rootDir": "src",
+        "testMatch": ["<rootDir>/v2/parsers/**/*.spec.ts"],
+        "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+        "moduleFileExtensions": ["js", "json", "ts"],
+        "testEnvironment": "node",
+        "setupFiles": ["<rootDir>/v2/parsers/parser-setup.ts"]
+      },
+      {
+        "displayName": "unit",
+        "rootDir": "src",
+        "testMatch": ["<rootDir>/**/*.spec.ts"],
+        "testPathIgnorePatterns": ["<rootDir>/v2/parsers/"],
+        "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+        "moduleFileExtensions": ["js", "json", "ts"],
+        "collectCoverageFrom": ["**/*.(t|j)s"],
+        "coverageDirectory": "../coverage",
+        "testEnvironment": "node"
+      }
+    ]
   }
 }
