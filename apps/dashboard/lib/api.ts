@@ -57,7 +57,7 @@ export class EngramCodeApi {
 
   constructor(opts: ApiClientOptions = {}) {
     this.baseUrl = resolveBaseUrl(opts.baseUrl).replace(/\/+$/, '');
-    this.fetchImpl = opts.fetch ?? fetch;
+    this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   async getCard(path: string, lod?: LodLevel): Promise<CardResponse> {

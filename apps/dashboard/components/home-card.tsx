@@ -6,7 +6,10 @@ import type { CardResponse, LodLevel } from '@/lib/schemas';
 import { useLodPersistence } from '@/lib/use-lod-persistence';
 import { CardView } from './card-view';
 
-const REPO_PATH = '.';
+// The CLI synth pipeline writes the repository-level card at concept path
+// "repository" (see REPOSITORY_CARD_CONCEPT_PATH in src/v2/cli/synth.ts). Keep
+// this constant aligned with that writer.
+const REPO_PATH = 'repository';
 
 interface HomeCardProps {
   initialLod?: LodLevel;
@@ -36,11 +39,17 @@ export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
+        // Treat 404 OR shape-mismatch (e.g. backend returned a list because no
+        // repository-level card exists yet) as "no repo card synthesized yet".
         if (err instanceof ApiError && err.status === 404) {
           setState({ status: 'empty' });
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
+        if (message.startsWith('[') || message.includes('"invalid_type"')) {
+          setState({ status: 'empty' });
+          return;
+        }
         setState({ status: 'error', message });
       });
     return () => {
