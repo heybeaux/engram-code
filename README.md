@@ -62,6 +62,18 @@ pnpm start:dev
 
 Server starts at `http://localhost:3002`.
 
+### Dashboard
+
+A browsable UI for the v1 API lives in [`apps/dashboard/`](apps/dashboard) —
+Next.js 15, App Router, runs on port `3001`.
+
+```bash
+pnpm --filter dashboard dev      # http://localhost:3001
+```
+
+See [`apps/dashboard/README.md`](apps/dashboard/README.md) for `EC_API_URL`
+config and the Vercel deploy steps.
+
 ### Register a Project
 
 ```bash
