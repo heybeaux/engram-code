@@ -11,6 +11,8 @@ const config: Config = {
     },
     extend: {
       colors: {
+        paper: '#f7f5f0',
+        ink: '#1f1f1f',
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
@@ -41,6 +43,34 @@ const config: Config = {
           foreground: 'hsl(var(--card-foreground))',
         },
       },
+      fontFamily: {
+        sans: [
+          'ui-sans-serif',
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'Segoe UI',
+          'Helvetica',
+          'Arial',
+          'sans-serif',
+        ],
+        serif: [
+          'Iowan Old Style',
+          'Charter',
+          'Georgia',
+          'Cambria',
+          'Times New Roman',
+          'serif',
+        ],
+        mono: [
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Monaco',
+          'Consolas',
+          'monospace',
+        ],
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
@@ -48,7 +78,7 @@ const config: Config = {
       },
     },
   },
-  plugins: [require('tailwindcss-animate')],
+  plugins: [require('tailwindcss-animate'), require('@tailwindcss/typography')],
 };
 
 export default config;

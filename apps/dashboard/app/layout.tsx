@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Engram-Code Dashboard',
-  description: 'Phase 2 dashboard for engram-code v2 cards API',
+  title: 'engram-code',
+  description: 'What is this codebase?',
 };
 
 export default function RootLayout({
@@ -13,7 +13,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-background font-sans antialiased">
+      <body className="min-h-screen bg-paper font-sans text-ink antialiased">
         {children}
       </body>
     </html>
