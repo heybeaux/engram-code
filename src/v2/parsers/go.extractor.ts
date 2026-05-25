@@ -25,8 +25,7 @@
  *     enclosing top-level function/method.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Parser: typeof import('tree-sitter') = require('tree-sitter');
+import Parser = require('tree-sitter');
 
 import { register } from './registry';
 import {

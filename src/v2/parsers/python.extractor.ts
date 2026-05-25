@@ -8,9 +8,8 @@
  * the AST.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Parser: typeof import('tree-sitter') = require('tree-sitter');
-type SyntaxNode = import('tree-sitter').SyntaxNode;
+import Parser = require('tree-sitter');
+type SyntaxNode = Parser.SyntaxNode;
 
 import { register } from './registry';
 import {

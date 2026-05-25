@@ -12,7 +12,7 @@
  * is trivially testable without a database.
  */
 
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 
 import type {
   StructureEdge,
@@ -110,7 +110,7 @@ export async function persistStructurePass(
     // Only attach metadata when present; Prisma's Json? createMany input
     // does not accept a bare `null`, only `Prisma.JsonNull` or omission.
     return edge.metadata
-      ? { ...base, metadata: edge.metadata as Record<string, unknown> }
+      ? { ...base, metadata: edge.metadata as Prisma.InputJsonValue }
       : base;
   });
 
