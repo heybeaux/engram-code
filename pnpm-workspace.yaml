@@ -1,5 +1,6 @@
 packages:
   - '.'
+  - 'apps/*'
 ignoreScripts: false
 onlyBuiltDependencies:
   - '@nestjs/core'
