@@ -60,6 +60,16 @@ export const EngramConfigSchema = z
       })
       .strict()
       .optional(),
+    observations: z
+      .object({
+        enabled: z.boolean().optional(),
+        endpoint: z.string().min(1).optional(),
+        apiKey: z.string().min(1).optional(),
+        batchSize: z.number().int().positive().optional(),
+        batchIntervalMs: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     modules: z
       .object({
         include: z.array(z.string().min(1)).optional(),
@@ -104,6 +114,13 @@ export interface ResolvedEngramConfig {
   budget: {
     dailyTokenCap: number;
     perPassTokenCap: number;
+  };
+  observations: {
+    enabled: boolean;
+    endpoint: string;
+    apiKey: string;
+    batchSize: number;
+    batchIntervalMs: number;
   };
   modules: {
     include: string[];

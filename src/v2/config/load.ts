@@ -220,6 +220,10 @@ export function mergeWithDefaults(
       ...DEFAULT_CONFIG.budget,
       ...overrides.budget,
     },
+    observations: {
+      ...DEFAULT_CONFIG.observations,
+      ...overrides.observations,
+    },
     modules: {
       include: overrides.modules?.include ?? [
         ...DEFAULT_CONFIG.modules.include,
