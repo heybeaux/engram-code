@@ -33,6 +33,13 @@ import { cardFilePath, readCard, writeCard } from '../writers/markdown/writer';
 import type { Card, LoDContent } from '../writers/markdown/types';
 import { writeRepoIndex } from '../writers/markdown/index-writer';
 
+import {
+  parseSynthArgs,
+  renderSummary,
+  runSynth,
+  type SynthArgs,
+} from './synth';
+
 /** Exit codes — kept distinct so shells / CI can branch on them. */
 export const EXIT = {
   OK: 0,
@@ -77,6 +84,8 @@ export async function run(argv: string[], io: CliIO = DEFAULT_IO): Promise<numbe
       return runCards(rest, io);
     case 'config':
       return runConfig(rest, io);
+    case 'synth':
+      return runSynthCommand(rest, io);
     default:
       io.stderr(`engram-code: unknown command "${command}"\n${usage()}`);
       return EXIT.USAGE;
@@ -85,21 +94,24 @@ export async function run(argv: string[], io: CliIO = DEFAULT_IO): Promise<numbe
 
 function usage(): string {
   return [
-    'engram-code — LoD card generator for codebases (v2 Phase 1)',
+    'engram-code — LoD card generator for codebases (v2 Phase 1+2)',
     '',
     'Usage:',
     '  engram-code index <repo-path> [--out=<dir>] [--repo-id=<id>] [--quiet|--verbose]',
     '  engram-code cards <conceptPath> [--lod=summary] [--root=<dir>]',
     '  engram-code config show <repo-path> [--config=<file>]',
+    '  engram-code synth <repo-path> [--out=<dir>] [--repo-id=<id>] [--dry-run]',
+    '  engram-code synth contracts|gotchas|subsystem|repository <repo-path> [...flags]',
     '',
     'Options:',
-    '  --out=<dir>     Artifacts root for `index` (default: <repo>/.engram/artifacts)',
+    '  --out=<dir>     Artifacts root (default: <repo>/.engram/artifacts)',
     '  --repo-id=<id>  Repo identifier stamped into card metadata (default: dir name)',
     '  --quiet         Suppress per-file parse-error lines; keep summary count only',
     '  --verbose       Include parser id and first stack line on per-file parse-error lines',
     '  --root=<dir>    Artifacts root for `cards` (default: $ENGRAM_ARTIFACTS_ROOT or ./.engram/artifacts)',
     '  --lod=<level>   One of index|summary|standard|deep (default: summary)',
     '  --config=<file> Explicit `.engram/config.yaml` path for `config show`',
+    '  --dry-run       For `synth`: print the planned LLM calls + token estimate without running them',
     '',
   ].join('\n');
 }
@@ -496,6 +508,47 @@ function parseConfigShowArgs(argv: string[]): ConfigShowArgs {
   }
   if (!repoPath) throw new Error('missing required <repo-path>');
   return { repoPath, configPath };
+}
+
+// ─── `engram-code synth` ─────────────────────────────────────────────────
+
+async function runSynthCommand(argv: string[], io: CliIO): Promise<number> {
+  let parsed: SynthArgs;
+  try {
+    parsed = parseSynthArgs(argv);
+  } catch (err) {
+    io.stderr(`engram-code synth: ${(err as Error).message}\n${usage()}`);
+    return EXIT.USAGE;
+  }
+
+  const repoPath = resolve(parsed.repoPath);
+  let stat;
+  try {
+    stat = await fs.stat(repoPath);
+  } catch {
+    io.stderr(`engram-code synth: repo path not found: ${repoPath}\n`);
+    return EXIT.NOT_FOUND;
+  }
+  if (!stat.isDirectory()) {
+    io.stderr(`engram-code synth: not a directory: ${repoPath}\n`);
+    return EXIT.USAGE;
+  }
+
+  try {
+    const summary = await runSynth({
+      repoPath,
+      subcommand: parsed.subcommand,
+      outDir: parsed.outDir,
+      repoId: parsed.repoId,
+      dryRun: parsed.dryRun,
+      log: (line) => io.stdout(`${line}\n`),
+    });
+    io.stdout(renderSummary(summary));
+    return EXIT.OK;
+  } catch (err) {
+    io.stderr(`engram-code synth: ${(err as Error).message}\n`);
+    return EXIT.RUNTIME;
+  }
 }
 
 // Re-export for the bin shim and tests.

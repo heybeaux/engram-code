@@ -75,7 +75,7 @@ describe('HomeCard', () => {
     expect(screen.getByRole('heading', { level: 1, name: /engram-code/i })).toBeInTheDocument();
     expect(screen.getByTestId('card-metadata')).toHaveTextContent('generated at');
     expect(screen.getByTestId('card-metadata')).toHaveTextContent('abc1234');
-    expect(client.getCard).toHaveBeenCalledWith('.', 'standard');
+    expect(client.getCard).toHaveBeenCalledWith('repository', 'standard');
   });
 
   it('refetches at the new LoD when the switcher is clicked', async () => {
@@ -94,7 +94,7 @@ describe('HomeCard', () => {
     fireEvent.click(screen.getByTestId('lod-deep'));
 
     await waitFor(() =>
-      expect(client.getCard).toHaveBeenLastCalledWith('.', 'deep'),
+      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'deep'),
     );
     await screen.findByText('engram-code (deep)');
   });
