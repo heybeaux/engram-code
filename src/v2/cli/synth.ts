@@ -60,6 +60,7 @@ import { writeGotchasArtifacts } from '../passes/gotchas/writer';
 import { registerElixirExtractor } from '../parsers/elixir.extractor';
 import { registerGoExtractor } from '../parsers/go.extractor';
 import { registerPythonExtractor } from '../parsers/python.extractor';
+import { registerRustExtractor } from '../parsers/rust.extractor';
 import { registerTypeScriptExtractor } from '../parsers/typescript.extractor';
 import type { StructureEdge, StructureNode } from '../parsers/types';
 import {
@@ -218,6 +219,7 @@ function ensureExtractorsRegistered(): void {
   registerPythonExtractor();
   registerGoExtractor();
   registerElixirExtractor();
+  registerRustExtractor();
   extractorsRegistered = true;
 }
 

@@ -28,6 +28,7 @@ import type { StructurePassResult } from '../passes/structure/orchestrator';
 import { registerElixirExtractor } from '../parsers/elixir.extractor';
 import { registerGoExtractor } from '../parsers/go.extractor';
 import { registerPythonExtractor } from '../parsers/python.extractor';
+import { registerRustExtractor } from '../parsers/rust.extractor';
 import { registerTypeScriptExtractor } from '../parsers/typescript.extractor';
 import type { StructureNode } from '../parsers/types';
 import { cardFilePath, readCard, writeCard } from '../writers/markdown/writer';
@@ -336,6 +337,7 @@ function ensureExtractorsRegistered(): void {
   registerPythonExtractor();
   registerGoExtractor();
   registerElixirExtractor();
+  registerRustExtractor();
   extractorsRegistered = true;
 }
 
