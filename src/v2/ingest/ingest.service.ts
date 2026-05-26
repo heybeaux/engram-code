@@ -43,6 +43,12 @@ export const INGEST_CLONE_ADAPTER = Symbol('INGEST_CLONE_ADAPTER');
 export const INGEST_SYNTH_OVERRIDES = Symbol('INGEST_SYNTH_OVERRIDES');
 export const INGEST_PASS_RUN_RECORDER = Symbol('INGEST_PASS_RUN_RECORDER');
 export const INGEST_BUDGET_PRISMA = Symbol('INGEST_BUDGET_PRISMA');
+/**
+ * EC-46: Prisma client used by the incremental rescan gate. Same shape as
+ * the budget Prisma — typically the wider PrismaClient — but kept on a
+ * separate token so a deployer can wire one without the other.
+ */
+export const INGEST_INCREMENTAL_PRISMA = Symbol('INGEST_INCREMENTAL_PRISMA');
 
 /**
  * Records one `pass_runs` row per pass invocation. Injected so the ingest
@@ -102,6 +108,9 @@ export class IngestService {
     @Optional()
     @Inject(INGEST_BUDGET_PRISMA)
     private readonly budgetPrisma: PassRunPrismaClient | null = null,
+    @Optional()
+    @Inject(INGEST_INCREMENTAL_PRISMA)
+    private readonly incrementalPrisma: PassRunPrismaClient | null = null,
   ) {}
 
   /**
@@ -267,6 +276,12 @@ export class IngestService {
       onPassRun: this.passRunRecorder ?? undefined,
       // EC-48: per-pass + daily token caps, enforced before each pass.
       budget,
+      // EC-46: incremental git-diff rescans. When the Prisma client is wired,
+      // each pass consults `pass_runs.inputHash` and skips unchanged ones.
+      // Without Prisma, every pass runs (legacy behavior).
+      incremental: this.incrementalPrisma
+        ? { prisma: this.incrementalPrisma }
+        : undefined,
     });
 
     job.totalTokens = summary.totalTokens;

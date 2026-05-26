@@ -24,6 +24,15 @@ import type { ResolvedEngramConfig } from '../config';
 import { loadConfig } from '../config';
 import type { BudgetTracker } from '../ingest/budget-tracker';
 import {
+  AffectedPathsCache,
+  buildSkippedPassRun,
+  computeConfigHash,
+  type IncrementalPrismaClient,
+  resolveHeadSha,
+  resolveSinceSha,
+  shouldRerunPass,
+} from '../ingest/incremental';
+import {
   callOpenRouter,
   type LLMClient,
   type LLMRequest,
@@ -168,6 +177,20 @@ export interface RunSynthOptions {
    * `recordSpend` after each successful pass.
    */
   budget?: BudgetTracker;
+  /**
+   * EC-46: incremental git-diff rescans. When `incremental.prisma` is
+   * provided, each pass consults the `pass_runs` ledger and skips
+   * unchanged passes (emitting a SUCCESS row with `errorMessage =
+   * 'skipped-no-changes'`). When omitted, every pass runs (legacy behavior).
+   *
+   * `force` short-circuits the cache and reruns every pass (CLI `--full`).
+   * `sinceSha` overrides the auto-resolved anchor (CLI `--since <ref>`).
+   */
+  incremental?: {
+    prisma: IncrementalPrismaClient;
+    force?: boolean;
+    sinceSha?: string | null;
+  };
 }
 
 let extractorsRegistered = false;
@@ -234,6 +257,53 @@ export async function runSynth(
 
   const tokenCap = resolveDailyTokenCap(loaded.config);
   const perPassCap = loaded.config.budget.perPassTokenCap;
+
+  // EC-46: incremental git-diff rescans. Resolved once per `runSynth` call;
+  // each pass calls `gateIncremental` below to decide rerun-vs-skip. When
+  // no incremental client is wired the gate always returns "run" so the
+  // legacy code path is unaffected.
+  const incrementalCache = opts.incremental
+    ? new AffectedPathsCache(opts.repoPath)
+    : null;
+  const headSha = opts.incremental ? await resolveHeadSha(opts.repoPath) : null;
+  const sinceSha = opts.incremental
+    ? await resolveSinceSha(
+        opts.incremental.prisma,
+        repoId,
+        opts.incremental.sinceSha,
+      )
+    : null;
+  const configHash = computeConfigHash({
+    passes: loaded.config.passes,
+    budget: loaded.config.budget,
+  });
+  const gateIncremental = async (
+    passName: PassName,
+    startedAt: Date,
+  ): Promise<{ skip: false } | { skip: true }> => {
+    if (!opts.incremental || !incrementalCache || !headSha || opts.dryRun) {
+      return { skip: false };
+    }
+    const affectedPaths = await incrementalCache.get(sinceSha);
+    const decision = await shouldRerunPass(
+      opts.incremental.prisma,
+      repoId,
+      { passName, sha: headSha, affectedPaths },
+      { configHash, force: opts.incremental.force },
+    );
+    if (decision.rerun) return { skip: false };
+    log(`synth: ${passName} skipped — no changes since ${sinceSha ?? 'init'}`);
+    await fireHook(
+      buildSkippedPassRun({
+        repoId,
+        passName,
+        newInputHash: decision.newInputHash,
+        headSha,
+        startedAt,
+      }),
+    );
+    return { skip: true };
+  };
   const summary: SynthRunSummary = {
     repoId,
     repoPath: opts.repoPath,
@@ -340,90 +410,101 @@ export async function runSynth(
       summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
     } else {
       const contractsStartedAt = new Date();
-      const gate = await gateBudget(
-        'contracts',
-        loaded.config.passes.contracts.model,
-        contractsStartedAt,
-      );
-      if ('skip' in gate) {
+      const inc = await gateIncremental('contracts', contractsStartedAt);
+      if (inc.skip) {
         summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
       } else {
-      try {
-        const merged: ContractsPassResult = {
-          repoId,
-          modules: [],
-          totalTokens: 0,
-          passRun: {
-            repoId,
-            passName: 'contracts',
-            status: 'SUCCESS',
-            model: loaded.config.passes.contracts.model,
-            tokenCost: 0,
-            startedAt: contractsStartedAt,
-            finishedAt: contractsStartedAt,
-          },
-        };
-        for (const bundle of contractsByLang) {
-          const perCallCap = Math.min(gate.cap, perPassCap);
-          const result = await runContractsPass(repoId, bundle.modules, {
-            llm: opts.overrides?.contractsLlm,
-            model: loaded.config.passes.contracts.model,
-            fallbackModel: loaded.config.passes.contracts.fallback,
-            maxInputTokens: loaded.config.passes.contracts.maxInputTokens,
-            maxOutputTokens: loaded.config.passes.contracts.maxOutputTokens,
-            runTokenCap: perCallCap,
-          });
-          merged.modules.push(...result.modules);
-          merged.totalTokens += result.totalTokens;
-          tokensSpent += result.totalTokens;
-        }
-        opts.budget?.recordSpend('contracts', merged.totalTokens);
-        contractsResult = merged;
-        await writeContractsArtifacts(merged.modules, {
-          artifactsRoot: outDir,
-        });
-        await writeModuleCards(outDir, merged.modules, repoId, 'contracts');
-        const errors = merged.modules.filter(
-          (m) => m.skipReason === 'llm-error',
-        ).length;
-        const annotated = merged.modules.filter((m) => m.card !== null).length;
-        summary.contracts = {
-          modulesAnnotated: annotated,
-          tokensUsed: merged.totalTokens,
-          errors,
-        };
-        log(
-          `synth: contracts → ${annotated} module card(s), ${merged.totalTokens} tokens` +
-            (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
+        const gate = await gateBudget(
+          'contracts',
+          loaded.config.passes.contracts.model,
+          contractsStartedAt,
         );
-        await fireHook({
-          repoId,
-          passName: 'contracts',
-          status: errors > 0 && annotated === 0 ? 'FAILED' : 'SUCCESS',
-          model: loaded.config.passes.contracts.model,
-          tokenCost: merged.totalTokens,
-          startedAt: contractsStartedAt,
-          finishedAt: new Date(),
-          errorMessage:
-            errors > 0
-              ? `${errors}/${merged.modules.length} module(s) failed`
-              : undefined,
-        });
-      } catch (err) {
-        const finishedAt = new Date();
-        log(`synth: contracts pass failed: ${(err as Error).message}`);
-        summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 1 };
-        await fireHook({
-          repoId,
-          passName: 'contracts',
-          status: 'FAILED',
-          model: loaded.config.passes.contracts.model,
-          tokenCost: 0,
-          startedAt: contractsStartedAt,
-          finishedAt,
-          errorMessage: (err as Error).message,
-        });
-      }
+        if ('skip' in gate) {
+          summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
+        } else {
+          try {
+            const merged: ContractsPassResult = {
+              repoId,
+              modules: [],
+              totalTokens: 0,
+              passRun: {
+                repoId,
+                passName: 'contracts',
+                status: 'SUCCESS',
+                model: loaded.config.passes.contracts.model,
+                tokenCost: 0,
+                startedAt: contractsStartedAt,
+                finishedAt: contractsStartedAt,
+              },
+            };
+            for (const bundle of contractsByLang) {
+              const perCallCap = Math.min(gate.cap, perPassCap);
+              const result = await runContractsPass(repoId, bundle.modules, {
+                llm: opts.overrides?.contractsLlm,
+                model: loaded.config.passes.contracts.model,
+                fallbackModel: loaded.config.passes.contracts.fallback,
+                maxInputTokens: loaded.config.passes.contracts.maxInputTokens,
+                maxOutputTokens: loaded.config.passes.contracts.maxOutputTokens,
+                runTokenCap: perCallCap,
+              });
+              merged.modules.push(...result.modules);
+              merged.totalTokens += result.totalTokens;
+              tokensSpent += result.totalTokens;
+            }
+            opts.budget?.recordSpend('contracts', merged.totalTokens);
+            contractsResult = merged;
+            await writeContractsArtifacts(merged.modules, {
+              artifactsRoot: outDir,
+            });
+            await writeModuleCards(outDir, merged.modules, repoId, 'contracts');
+            const errors = merged.modules.filter(
+              (m) => m.skipReason === 'llm-error',
+            ).length;
+            const annotated = merged.modules.filter(
+              (m) => m.card !== null,
+            ).length;
+            summary.contracts = {
+              modulesAnnotated: annotated,
+              tokensUsed: merged.totalTokens,
+              errors,
+            };
+            log(
+              `synth: contracts → ${annotated} module card(s), ${merged.totalTokens} tokens` +
+                (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
+            );
+            await fireHook({
+              repoId,
+              passName: 'contracts',
+              status: errors > 0 && annotated === 0 ? 'FAILED' : 'SUCCESS',
+              model: loaded.config.passes.contracts.model,
+              tokenCost: merged.totalTokens,
+              startedAt: contractsStartedAt,
+              finishedAt: new Date(),
+              errorMessage:
+                errors > 0
+                  ? `${errors}/${merged.modules.length} module(s) failed`
+                  : undefined,
+            });
+          } catch (err) {
+            const finishedAt = new Date();
+            log(`synth: contracts pass failed: ${(err as Error).message}`);
+            summary.contracts = {
+              modulesAnnotated: 0,
+              tokensUsed: 0,
+              errors: 1,
+            };
+            await fireHook({
+              repoId,
+              passName: 'contracts',
+              status: 'FAILED',
+              model: loaded.config.passes.contracts.model,
+              tokenCost: 0,
+              startedAt: contractsStartedAt,
+              finishedAt,
+              errorMessage: (err as Error).message,
+            });
+          }
+        }
       }
     }
   }
@@ -440,61 +521,70 @@ export async function runSynth(
       summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
     } else {
       const gotchasStartedAt = new Date();
-      const gate = await gateBudget(
-        'gotchas',
-        loaded.config.passes.gotchas.model,
-        gotchasStartedAt,
-      );
-      if ('skip' in gate) {
+      const inc = await gateIncremental('gotchas', gotchasStartedAt);
+      if (inc.skip) {
         summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
       } else {
-      try {
-        const result = await runGotchasPass(repoId, gotchasInputs, {
-          llm: opts.overrides?.gotchasLlm,
-          model: loaded.config.passes.gotchas.model,
-          fallbackModel: loaded.config.passes.gotchas.fallback,
-          maxInputTokens: loaded.config.passes.gotchas.maxInputTokens,
-          maxOutputTokens: loaded.config.passes.gotchas.maxOutputTokens,
-          maxLLMCalls: loaded.config.passes.gotchas.maxLLMCalls,
-          runTokenCap: Math.min(gate.cap, perPassCap),
-        });
-        gotchasResult = result;
-        tokensSpent += result.totalTokens;
-        opts.budget?.recordSpend('gotchas', result.totalTokens);
-        await writeGotchasArtifacts(result.modules, { artifactsRoot: outDir });
-        await writeModuleCards(outDir, result.modules, repoId, 'gotchas');
-        const errors = result.modules.filter(
-          (m) => m.skipReason === 'llm-error',
-        ).length;
-        const annotated = result.modules.filter((m) => m.card !== null).length;
-        summary.gotchas = {
-          modulesAnnotated: annotated,
-          tokensUsed: result.totalTokens,
-          errors,
-        };
-        log(
-          `synth: gotchas → ${annotated} module card(s), ${result.totalTokens} tokens` +
-            (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
+        const gate = await gateBudget(
+          'gotchas',
+          loaded.config.passes.gotchas.model,
+          gotchasStartedAt,
         );
-        await fireHook({
-          ...result.passRun,
-          startedAt: gotchasStartedAt,
-          finishedAt: new Date(),
-        });
-      } catch (err) {
-        log(`synth: gotchas pass failed: ${(err as Error).message}`);
-        summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 1 };
-        await fireHook({
-          repoId,
-          passName: 'gotchas',
-          status: 'FAILED',
-          model: loaded.config.passes.gotchas.model,
-          tokenCost: 0,
-          startedAt: gotchasStartedAt,
-          finishedAt: new Date(),
-          errorMessage: (err as Error).message,
-        });
-      }
+        if ('skip' in gate) {
+          summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
+        } else {
+          try {
+            const result = await runGotchasPass(repoId, gotchasInputs, {
+              llm: opts.overrides?.gotchasLlm,
+              model: loaded.config.passes.gotchas.model,
+              fallbackModel: loaded.config.passes.gotchas.fallback,
+              maxInputTokens: loaded.config.passes.gotchas.maxInputTokens,
+              maxOutputTokens: loaded.config.passes.gotchas.maxOutputTokens,
+              maxLLMCalls: loaded.config.passes.gotchas.maxLLMCalls,
+              runTokenCap: Math.min(gate.cap, perPassCap),
+            });
+            gotchasResult = result;
+            tokensSpent += result.totalTokens;
+            opts.budget?.recordSpend('gotchas', result.totalTokens);
+            await writeGotchasArtifacts(result.modules, {
+              artifactsRoot: outDir,
+            });
+            await writeModuleCards(outDir, result.modules, repoId, 'gotchas');
+            const errors = result.modules.filter(
+              (m) => m.skipReason === 'llm-error',
+            ).length;
+            const annotated = result.modules.filter(
+              (m) => m.card !== null,
+            ).length;
+            summary.gotchas = {
+              modulesAnnotated: annotated,
+              tokensUsed: result.totalTokens,
+              errors,
+            };
+            log(
+              `synth: gotchas → ${annotated} module card(s), ${result.totalTokens} tokens` +
+                (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
+            );
+            await fireHook({
+              ...result.passRun,
+              startedAt: gotchasStartedAt,
+              finishedAt: new Date(),
+            });
+          } catch (err) {
+            log(`synth: gotchas pass failed: ${(err as Error).message}`);
+            summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 1 };
+            await fireHook({
+              repoId,
+              passName: 'gotchas',
+              status: 'FAILED',
+              model: loaded.config.passes.gotchas.model,
+              tokenCost: 0,
+              startedAt: gotchasStartedAt,
+              finishedAt: new Date(),
+              errorMessage: (err as Error).message,
+            });
+          }
+        }
       }
     }
   }
@@ -515,90 +605,102 @@ export async function runSynth(
       summary.subsystem = { subsystemsDiscovered: 0, tokensUsed: 0, errors: 0 };
     } else {
       const subsystemStartedAt = new Date();
-      const gate = await gateBudget(
-        'subsystem',
-        loaded.config.passes.synthesis.subsystem.model,
-        subsystemStartedAt,
-      );
-      if ('skip' in gate) {
+      const inc = await gateIncremental('subsystem', subsystemStartedAt);
+      if (inc.skip) {
         summary.subsystem = {
           subsystemsDiscovered: 0,
           tokensUsed: 0,
           errors: 0,
         };
       } else {
-      try {
-        const result = await runSubsystemPass(
-          repoId,
-          structure.nodes,
-          structure.edges,
-          moduleNodes,
-          {
-            llm: opts.overrides?.subsystemLlm,
-            model: loaded.config.passes.synthesis.subsystem.model,
-            fallbackModel: loaded.config.passes.synthesis.subsystem.fallback,
-            runTokenCap: Math.min(gate.cap, perPassCap),
-            quietWarnings: true,
-          },
+        const gate = await gateBudget(
+          'subsystem',
+          loaded.config.passes.synthesis.subsystem.model,
+          subsystemStartedAt,
         );
-        subsystemResult = result;
-        tokensSpent += result.totalTokens;
-        opts.budget?.recordSpend('subsystem', result.totalTokens);
-        const artifactInputs = result.clusters
-          .filter((c) => c.slug && !c.skipReason)
-          .map((c) => {
-            const subsystem = result.subsystems.find((s) => s.slug === c.slug);
-            if (!subsystem) return null;
-            return {
-              subsystem,
-              cluster: {
-                clusterId: c.clusterId,
-                tokenCost: c.tokenCost,
-                truncated: c.truncated,
-                nameFallback: c.nameFallback,
+        if ('skip' in gate) {
+          summary.subsystem = {
+            subsystemsDiscovered: 0,
+            tokensUsed: 0,
+            errors: 0,
+          };
+        } else {
+          try {
+            const result = await runSubsystemPass(
+              repoId,
+              structure.nodes,
+              structure.edges,
+              moduleNodes,
+              {
+                llm: opts.overrides?.subsystemLlm,
+                model: loaded.config.passes.synthesis.subsystem.model,
+                fallbackModel:
+                  loaded.config.passes.synthesis.subsystem.fallback,
+                runTokenCap: Math.min(gate.cap, perPassCap),
+                quietWarnings: true,
               },
+            );
+            subsystemResult = result;
+            tokensSpent += result.totalTokens;
+            opts.budget?.recordSpend('subsystem', result.totalTokens);
+            const artifactInputs = result.clusters
+              .filter((c) => c.slug && !c.skipReason)
+              .map((c) => {
+                const subsystem = result.subsystems.find(
+                  (s) => s.slug === c.slug,
+                );
+                if (!subsystem) return null;
+                return {
+                  subsystem,
+                  cluster: {
+                    clusterId: c.clusterId,
+                    tokenCost: c.tokenCost,
+                    truncated: c.truncated,
+                    nameFallback: c.nameFallback,
+                  },
+                };
+              })
+              .filter((a): a is NonNullable<typeof a> => a !== null);
+            await writeSubsystemArtifacts(artifactInputs, {
+              artifactsRoot: outDir,
+            });
+            await writeSubsystemCards(outDir, result, repoId);
+            const errors = result.clusters.filter(
+              (c) => c.skipReason === 'llm-error',
+            ).length;
+            summary.subsystem = {
+              subsystemsDiscovered: result.subsystems.length,
+              tokensUsed: result.totalTokens,
+              errors,
             };
-          })
-          .filter((a): a is NonNullable<typeof a> => a !== null);
-        await writeSubsystemArtifacts(artifactInputs, {
-          artifactsRoot: outDir,
-        });
-        await writeSubsystemCards(outDir, result, repoId);
-        const errors = result.clusters.filter(
-          (c) => c.skipReason === 'llm-error',
-        ).length;
-        summary.subsystem = {
-          subsystemsDiscovered: result.subsystems.length,
-          tokensUsed: result.totalTokens,
-          errors,
-        };
-        log(
-          `synth: subsystem → ${result.subsystems.length} subsystem(s), ${result.totalTokens} tokens` +
-            (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
-        );
-        await fireHook({
-          ...result.passRun,
-          startedAt: subsystemStartedAt,
-          finishedAt: new Date(),
-        });
-      } catch (err) {
-        log(`synth: subsystem pass failed: ${(err as Error).message}`);
-        summary.subsystem = {
-          subsystemsDiscovered: 0,
-          tokensUsed: 0,
-          errors: 1,
-        };
-        await fireHook({
-          repoId,
-          passName: 'subsystem',
-          status: 'FAILED',
-          model: loaded.config.passes.synthesis.subsystem.model,
-          tokenCost: 0,
-          startedAt: subsystemStartedAt,
-          finishedAt: new Date(),
-          errorMessage: (err as Error).message,
-        });
-      }
+            log(
+              `synth: subsystem → ${result.subsystems.length} subsystem(s), ${result.totalTokens} tokens` +
+                (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
+            );
+            await fireHook({
+              ...result.passRun,
+              startedAt: subsystemStartedAt,
+              finishedAt: new Date(),
+            });
+          } catch (err) {
+            log(`synth: subsystem pass failed: ${(err as Error).message}`);
+            summary.subsystem = {
+              subsystemsDiscovered: 0,
+              tokensUsed: 0,
+              errors: 1,
+            };
+            await fireHook({
+              repoId,
+              passName: 'subsystem',
+              status: 'FAILED',
+              model: loaded.config.passes.synthesis.subsystem.model,
+              tokenCost: 0,
+              startedAt: subsystemStartedAt,
+              finishedAt: new Date(),
+              errorMessage: (err as Error).message,
+            });
+          }
+        }
       }
     }
   }
@@ -622,65 +724,76 @@ export async function runSynth(
       summary.repository = { tokensUsed: 0, fallbacks: 4 };
     } else {
       const repositoryStartedAt = new Date();
-      const gate = await gateBudget(
+      const inc = await gateIncremental(
         'synthesis-repository',
-        loaded.config.passes.synthesis.repository.model,
         repositoryStartedAt,
       );
-      if ('skip' in gate) {
-        summary.repository = { tokensUsed: 0, fallbacks: 4 };
+      if (inc.skip) {
+        summary.repository = { tokensUsed: 0, fallbacks: 0 };
       } else {
-      try {
-        const result = await runRepositoryPass(repoId, repoInput, {
-          llm: opts.overrides?.repositoryLlm,
-          model: loaded.config.passes.synthesis.repository.model,
-          fallbackModel: loaded.config.passes.synthesis.repository.fallback,
-          runTokenCap: Math.min(gate.cap, perPassCap),
-          quietWarnings: true,
-        });
-        repositoryResult = result;
-        tokensSpent += result.totalTokens;
-        opts.budget?.recordSpend('synthesis-repository', result.totalTokens);
-        await writeRepositoryArtifact(
-          {
-            repoId,
-            input: repoInput,
-            cards: result.cards,
-            lods: result.lods,
-            totalTokens: result.totalTokens,
-            model: loaded.config.passes.synthesis.repository.model,
-          },
-          { artifactsRoot: outDir },
+        const gate = await gateBudget(
+          'synthesis-repository',
+          loaded.config.passes.synthesis.repository.model,
+          repositoryStartedAt,
         );
-        await writeRepositoryCard(outDir, result);
-        const fallbacks = result.lods.filter((l) => l.fallback).length;
-        summary.repository = {
-          tokensUsed: result.totalTokens,
-          fallbacks,
-        };
-        log(
-          `synth: repository → ${result.totalTokens} tokens` +
-            (fallbacks > 0 ? `, ${fallbacks} LoD fallback(s)` : ''),
-        );
-        await fireHook({
-          ...result.passRun,
-          startedAt: repositoryStartedAt,
-          finishedAt: new Date(),
-        });
-      } catch (err) {
-        log(`synth: repository pass failed: ${(err as Error).message}`);
-        summary.repository = { tokensUsed: 0, fallbacks: 4 };
-        await fireHook({
-          repoId,
-          passName: 'synthesis-repository',
-          status: 'FAILED',
-          model: loaded.config.passes.synthesis.repository.model,
-          tokenCost: 0,
-          startedAt: repositoryStartedAt,
-          finishedAt: new Date(),
-          errorMessage: (err as Error).message,
-        });
-      }
+        if ('skip' in gate) {
+          summary.repository = { tokensUsed: 0, fallbacks: 4 };
+        } else {
+          try {
+            const result = await runRepositoryPass(repoId, repoInput, {
+              llm: opts.overrides?.repositoryLlm,
+              model: loaded.config.passes.synthesis.repository.model,
+              fallbackModel: loaded.config.passes.synthesis.repository.fallback,
+              runTokenCap: Math.min(gate.cap, perPassCap),
+              quietWarnings: true,
+            });
+            repositoryResult = result;
+            tokensSpent += result.totalTokens;
+            opts.budget?.recordSpend(
+              'synthesis-repository',
+              result.totalTokens,
+            );
+            await writeRepositoryArtifact(
+              {
+                repoId,
+                input: repoInput,
+                cards: result.cards,
+                lods: result.lods,
+                totalTokens: result.totalTokens,
+                model: loaded.config.passes.synthesis.repository.model,
+              },
+              { artifactsRoot: outDir },
+            );
+            await writeRepositoryCard(outDir, result);
+            const fallbacks = result.lods.filter((l) => l.fallback).length;
+            summary.repository = {
+              tokensUsed: result.totalTokens,
+              fallbacks,
+            };
+            log(
+              `synth: repository → ${result.totalTokens} tokens` +
+                (fallbacks > 0 ? `, ${fallbacks} LoD fallback(s)` : ''),
+            );
+            await fireHook({
+              ...result.passRun,
+              startedAt: repositoryStartedAt,
+              finishedAt: new Date(),
+            });
+          } catch (err) {
+            log(`synth: repository pass failed: ${(err as Error).message}`);
+            summary.repository = { tokensUsed: 0, fallbacks: 4 };
+            await fireHook({
+              repoId,
+              passName: 'synthesis-repository',
+              status: 'FAILED',
+              model: loaded.config.passes.synthesis.repository.model,
+              tokenCost: 0,
+              startedAt: repositoryStartedAt,
+              finishedAt: new Date(),
+              errorMessage: (err as Error).message,
+            });
+          }
+        }
       }
     }
   }
@@ -1003,6 +1116,10 @@ export interface SynthArgs {
   outDir?: string;
   repoId?: string;
   dryRun?: boolean;
+  /** EC-46: force every pass to rerun, ignoring the incremental cache. */
+  full?: boolean;
+  /** EC-46: anchor the git diff at this ref instead of last successful PassRun. */
+  since?: string;
 }
 
 export function parseSynthArgs(argv: string[]): SynthArgs {
@@ -1011,6 +1128,8 @@ export function parseSynthArgs(argv: string[]): SynthArgs {
   let outDir: string | undefined;
   let repoId: string | undefined;
   let dryRun = false;
+  let full = false;
+  let since: string | undefined;
 
   const rest: string[] = [];
   if (argv.length > 0 && VALID_SUBCOMMANDS.includes(argv[0])) {
@@ -1023,6 +1142,10 @@ export function parseSynthArgs(argv: string[]): SynthArgs {
   for (const arg of rest) {
     if (arg === '--dry-run') {
       dryRun = true;
+    } else if (arg === '--full') {
+      full = true;
+    } else if (arg.startsWith('--since=')) {
+      since = arg.slice('--since='.length);
     } else if (arg.startsWith('--out=')) {
       outDir = arg.slice('--out='.length);
     } else if (arg.startsWith('--repo-id=')) {
@@ -1037,7 +1160,7 @@ export function parseSynthArgs(argv: string[]): SynthArgs {
   }
 
   if (!repoPath) throw new Error('missing required <repo-path>');
-  return { subcommand, repoPath, outDir, repoId, dryRun };
+  return { subcommand, repoPath, outDir, repoId, dryRun, full, since };
 }
 
 /** Re-export so cli.ts can build the human-readable summary block. */
