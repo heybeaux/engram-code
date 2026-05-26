@@ -5,6 +5,7 @@ import { ProjectsModule } from './projects/projects.module';
 import { SearchModule } from './search/search.module';
 import { IngestionModule } from './ingestion/ingestion.module';
 import { CardsModule } from './v2/api/cards.module';
+import { V2IngestModule } from './v2/ingest/ingest.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { CardsModule } from './v2/api/cards.module';
     SearchModule,
     IngestionModule,
     CardsModule,
+    V2IngestModule,
   ],
 })
 export class AppModule {}

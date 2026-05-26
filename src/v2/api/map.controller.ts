@@ -29,7 +29,7 @@ import {
 
 import type { Card } from '../writers/markdown/types';
 import type { MapNodeDto, MapResponseDto } from './dto';
-import { CardsFsService } from './services/cards-fs.service';
+import { CardsFsService, isValidRepoId } from './services/cards-fs.service';
 
 const DEFAULT_DEPTH = 2;
 const MAX_DEPTH = 10;
@@ -44,13 +44,15 @@ export class MapController {
   async get(
     @Query('root') rootParam?: string,
     @Query('depth') depthParam?: string,
+    @Query('repo') repoParam?: string,
   ): Promise<MapResponseDto> {
     const depth = parseDepth(depthParam);
     const root = normalizeRoot(rootParam);
+    const repoId = validateRepoIdQuery(repoParam);
 
     let cards: Card[];
     try {
-      cards = await this.cardsFs.readAll();
+      cards = await this.cardsFs.readAll(repoId);
     } catch (err) {
       this.logger.error('Failed to read cards for map', err as Error);
       throw new HttpException(
@@ -119,6 +121,17 @@ function normalizeRoot(raw: string | undefined): string | null {
     );
   }
   return trimmed;
+}
+
+function validateRepoIdQuery(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (!isValidRepoId(raw)) {
+    throw new HttpException(
+      `Invalid repo "${raw}"; must match /^[A-Za-z0-9._-]+$/`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return raw;
 }
 
 /**

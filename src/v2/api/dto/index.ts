@@ -54,6 +54,24 @@ export interface SearchConceptRequestDto {
   lod?: LodLevel;
   /** Max results returned. Defaults to 10, capped at 50. */
   limit?: number;
+  /**
+   * Scope to a specific ingested repo (EC-39b). When omitted, searches the
+   * legacy single-repo artifacts root.
+   */
+  repoId?: string;
+}
+
+/** One repo listed by `GET /v1/repos` (EC-39b). */
+export interface RepoSummaryDto {
+  repoId: string;
+  /** Number of cards present on disk for this repo. */
+  cardCount: number;
+}
+
+/** Response shape for `GET /v1/repos`. */
+export interface ReposListResponseDto {
+  repos: RepoSummaryDto[];
+  count: number;
 }
 
 /** One ranked hit from concept search. */

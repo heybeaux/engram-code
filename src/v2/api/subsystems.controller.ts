@@ -18,13 +18,14 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Query,
 } from '@nestjs/common';
 
 import type {
   SubsystemDto,
   SubsystemListResponseDto,
 } from './dto';
-import { CardsFsService } from './services/cards-fs.service';
+import { CardsFsService, isValidRepoId } from './services/cards-fs.service';
 
 @Controller('v1/subsystems')
 export class SubsystemsController {
@@ -33,10 +34,13 @@ export class SubsystemsController {
   constructor(private readonly cardsFs: CardsFsService) {}
 
   @Get()
-  async list(): Promise<SubsystemListResponseDto> {
+  async list(
+    @Query('repo') repoParam?: string,
+  ): Promise<SubsystemListResponseDto> {
+    const repoId = validateRepoIdQuery(repoParam);
     let files: Array<{ slug: string; raw: string }>;
     try {
-      files = await this.cardsFs.listSubsystemFiles();
+      files = await this.cardsFs.listSubsystemFiles(repoId);
     } catch (err) {
       this.logger.error('Failed to list subsystems', err as Error);
       throw new HttpException(
@@ -54,6 +58,17 @@ export class SubsystemsController {
       count: subsystems.length,
     };
   }
+}
+
+function validateRepoIdQuery(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (!isValidRepoId(raw)) {
+    throw new HttpException(
+      `Invalid repo "${raw}"; must match /^[A-Za-z0-9._-]+$/`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return raw;
 }
 
 /**

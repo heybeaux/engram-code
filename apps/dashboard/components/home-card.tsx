@@ -14,6 +14,7 @@ const REPO_PATH = 'repository';
 interface HomeCardProps {
   initialLod?: LodLevel;
   client?: Pick<EngramCodeApi, 'getCard'>;
+  repoId?: string;
 }
 
 type CardState =
@@ -22,7 +23,11 @@ type CardState =
   | { status: 'error'; message: string }
   | { status: 'success'; card: CardResponse };
 
-export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
+export function HomeCard({
+  initialLod = 'standard',
+  client,
+  repoId,
+}: HomeCardProps) {
   const [lod, setLod] = useLodPersistence(initialLod);
   const [state, setState] = useState<CardState>({ status: 'loading' });
   const [reloadKey, setReloadKey] = useState(0);
@@ -32,7 +37,7 @@ export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
     let cancelled = false;
     setState({ status: 'loading' });
     api
-      .getCard(REPO_PATH, lod)
+      .getCard(REPO_PATH, lod, repoId)
       .then((card) => {
         if (cancelled) return;
         setState({ status: 'success', card });
@@ -55,19 +60,27 @@ export function HomeCard({ initialLod = 'standard', client }: HomeCardProps) {
     return () => {
       cancelled = true;
     };
-  }, [lod, client, reloadKey]);
+  }, [lod, client, reloadKey, repoId]);
 
   const retry = useCallback(() => setReloadKey((n) => n + 1), []);
 
   return (
     <section className="flex flex-col gap-12">
-      <header>
-        <p className="font-mono text-xs uppercase tracking-[0.25em] text-stone-400">
-          engram-code
-        </p>
-        <h1 className="mt-2 font-serif text-3xl tracking-tight text-stone-900 sm:text-4xl">
-          What is this codebase?
-        </h1>
+      <header className="flex items-baseline justify-between gap-4">
+        <div>
+          <p className="font-mono text-xs uppercase tracking-[0.25em] text-stone-400">
+            engram-code{repoId !== undefined ? ` · ${repoId}` : ''}
+          </p>
+          <h1 className="mt-2 font-serif text-3xl tracking-tight text-stone-900 sm:text-4xl">
+            What is this codebase?
+          </h1>
+        </div>
+        <a
+          href="/ingest"
+          className="font-mono text-xs uppercase tracking-[0.15em] text-stone-500 hover:text-stone-900"
+        >
+          ingest →
+        </a>
       </header>
 
       <div className="min-h-[24rem]">

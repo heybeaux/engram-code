@@ -98,7 +98,7 @@ describe('LoD persistence', () => {
       fireEvent.click(screen.getByTestId('lod-deep'));
     });
     await waitFor(() =>
-      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'deep'),
+      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'deep', undefined),
     );
 
     expect(window.sessionStorage.getItem(LOD_STORAGE_KEY)).toBe('deep');
@@ -108,7 +108,7 @@ describe('LoD persistence', () => {
 
     render(<HomeCard client={client} />);
     await waitFor(() =>
-      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'deep'),
+      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'deep', undefined),
     );
   });
 
@@ -121,7 +121,7 @@ describe('LoD persistence', () => {
     };
     render(<HomeCard client={client} />);
     await waitFor(() =>
-      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'standard'),
+      expect(client.getCard).toHaveBeenLastCalledWith('repository', 'standard', undefined),
     );
   });
 });
