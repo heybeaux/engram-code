@@ -61,6 +61,7 @@ import { registerElixirExtractor } from '../parsers/elixir.extractor';
 import { registerGoExtractor } from '../parsers/go.extractor';
 import { registerPythonExtractor } from '../parsers/python.extractor';
 import { registerRustExtractor } from '../parsers/rust.extractor';
+import { registerSwiftExtractor } from '../parsers/swift.extractor';
 import { registerTypeScriptExtractor } from '../parsers/typescript.extractor';
 import type { StructureEdge, StructureNode } from '../parsers/types';
 import {
@@ -220,6 +221,7 @@ function ensureExtractorsRegistered(): void {
   registerGoExtractor();
   registerElixirExtractor();
   registerRustExtractor();
+  registerSwiftExtractor();
   extractorsRegistered = true;
 }
 

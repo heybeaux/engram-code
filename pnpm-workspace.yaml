@@ -11,5 +11,6 @@ onlyBuiltDependencies:
   - tree-sitter-javascript
   - tree-sitter-python
   - tree-sitter-rust
+  - tree-sitter-swift
   - tree-sitter-typescript
   - unrs-resolver
