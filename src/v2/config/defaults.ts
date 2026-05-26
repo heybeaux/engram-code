@@ -111,6 +111,17 @@ export const DEFAULT_CONFIG: ResolvedEngramConfig = Object.freeze({
     batchSize: 25,
     batchIntervalMs: 5_000,
   },
+  scheduler: {
+    // EC-49: cron defaults off — operators opt in by listing repos. The
+    // webhook route is mounted unconditionally; without a configured
+    // secret it accepts all callers, which is fine for trusted/local
+    // networks but should be set in production.
+    enabled: false,
+    cron: [],
+    webhook: {
+      secret: '',
+    },
+  },
   modules: {
     include: [...DEFAULT_INCLUDES],
     exclude: [...DEFAULT_EXCLUDES],

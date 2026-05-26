@@ -49,7 +49,7 @@ export type PassRunPrismaClient = Pick<PrismaClient, 'passRun'>;
  */
 export async function persistPassRun(
   prisma: PassRunPrismaClient,
-  run: PassRunInput & { metadata?: Prisma.InputJsonValue },
+  run: PassRunInput,
 ): Promise<PassRun> {
   const startedAt = run.startedAt ?? new Date();
   const finishedAt = run.finishedAt;
@@ -73,7 +73,9 @@ export async function persistPassRun(
   if (run.inputHash !== undefined) data.inputHash = run.inputHash;
   if (run.outputHash !== undefined) data.outputHash = run.outputHash;
   if (run.errorMessage !== undefined) data.errorMessage = run.errorMessage;
-  if (run.metadata !== undefined) data.metadata = run.metadata;
+  if (run.metadata !== undefined) {
+    data.metadata = run.metadata as Prisma.InputJsonValue;
+  }
 
   return prisma.passRun.create({ data });
 }
@@ -285,7 +287,7 @@ export interface WrapPassRunCallbackReturn<T> {
   model?: string;
   inputHash?: string;
   outputHash?: string;
-  metadata?: Prisma.InputJsonValue;
+  metadata?: Record<string, unknown>;
   result: T;
 }
 

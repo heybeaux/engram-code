@@ -224,6 +224,16 @@ export function mergeWithDefaults(
       ...DEFAULT_CONFIG.observations,
       ...overrides.observations,
     },
+    scheduler: {
+      enabled: overrides.scheduler?.enabled ?? DEFAULT_CONFIG.scheduler.enabled,
+      cron: overrides.scheduler?.cron
+        ? overrides.scheduler.cron.map((j) => ({ ...j }))
+        : [...DEFAULT_CONFIG.scheduler.cron],
+      webhook: {
+        ...DEFAULT_CONFIG.scheduler.webhook,
+        ...overrides.scheduler?.webhook,
+      },
+    },
     modules: {
       include: overrides.modules?.include ?? [
         ...DEFAULT_CONFIG.modules.include,

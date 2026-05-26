@@ -75,6 +75,12 @@ export interface PassRunInput {
   errorMessage?: string;
   startedAt?: Date;
   finishedAt?: Date;
+  /**
+   * Free-form per-pass extras persisted into `pass_runs.metadata`. EC-49
+   * uses this to stamp the trigger source (`cron` / `webhook` / `hook` /
+   * `manual`) onto every row so observability can attribute spend.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**
