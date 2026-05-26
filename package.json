@@ -42,6 +42,7 @@
     "tree-sitter-elixir": "^0.3.5",
     "tree-sitter-go": "^0.25.0",
     "tree-sitter-python": "^0.25.0",
+    "tree-sitter-rust": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
     "uuid": "^13.0.0",
     "yaml": "^2.9.0",
