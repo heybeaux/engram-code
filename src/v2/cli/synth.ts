@@ -22,6 +22,7 @@ import { dirname, join, posix, relative } from 'node:path';
 
 import type { ResolvedEngramConfig } from '../config';
 import { loadConfig } from '../config';
+import type { BudgetTracker } from '../ingest/budget-tracker';
 import {
   callOpenRouter,
   type LLMClient,
@@ -76,7 +77,7 @@ import {
   type SubsystemPassResult,
 } from '../passes/subsystem/orchestrator';
 import { writeSubsystemArtifacts } from '../passes/subsystem/writer';
-import type { CardInput, PassRunInput } from '../types/cards';
+import type { CardInput, PassName, PassRunInput } from '../types/cards';
 import type { Card } from '../writers/markdown/types';
 import { cardFilePath, readCard, writeCard } from '../writers/markdown/writer';
 
@@ -160,6 +161,13 @@ export interface RunSynthOptions {
    * but do not fail the pass — observability must never block synthesis.
    */
   onPassRun?: (run: PassRunInput) => Promise<void> | void;
+  /**
+   * EC-48: budget gate. When provided, each pass calls `canStartPass` first
+   * and is skipped (with a FAILED `pass_runs` row via {@link onPassRun}) if
+   * the daily or per-pass cap would be crossed. Spend is reported back via
+   * `recordSpend` after each successful pass.
+   */
+  budget?: BudgetTracker;
 }
 
 let extractorsRegistered = false;
@@ -225,6 +233,7 @@ export async function runSynth(
     : await loadConfig({ startDir: opts.repoPath });
 
   const tokenCap = resolveDailyTokenCap(loaded.config);
+  const perPassCap = loaded.config.budget.perPassTokenCap;
   const summary: SynthRunSummary = {
     repoId,
     repoPath: opts.repoPath,
@@ -271,6 +280,38 @@ export async function runSynth(
   let tokensSpent = 0;
   const remaining = () => Math.max(0, tokenCap - tokensSpent);
 
+  /**
+   * EC-48: consult the budget tracker before running `passName`. Returns the
+   * effective per-run cap (clamped by tracker's remainingDaily when present),
+   * or null when the pass must be skipped. The skipped path logs a FAILED
+   * `pass_runs` row via {@link fireHook} so the dashboard sees the abort.
+   */
+  const gateBudget = async (
+    passName: PassName,
+    model: string,
+    startedAt: Date,
+  ): Promise<{ cap: number } | { skip: true; reason: string }> => {
+    if (!opts.budget) return { cap: remaining() };
+    const decision = await opts.budget.canStartPass(passName);
+    if (!decision.ok) {
+      const reason = decision.reason ?? 'budget-exceeded:daily';
+      log(`synth: ${passName} skipped — ${reason}`);
+      await fireHook({
+        repoId,
+        passName,
+        status: 'FAILED',
+        model,
+        tokenCost: 0,
+        startedAt,
+        finishedAt: new Date(),
+        errorMessage: reason,
+      });
+      return { skip: true, reason };
+    }
+    const cap = Math.min(remaining(), decision.remainingDaily);
+    return { cap };
+  };
+
   // Track which passes to actually run.
   const runContracts =
     opts.subcommand === 'all' || opts.subcommand === 'contracts';
@@ -299,6 +340,14 @@ export async function runSynth(
       summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
     } else {
       const contractsStartedAt = new Date();
+      const gate = await gateBudget(
+        'contracts',
+        loaded.config.passes.contracts.model,
+        contractsStartedAt,
+      );
+      if ('skip' in gate) {
+        summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
+      } else {
       try {
         const merged: ContractsPassResult = {
           repoId,
@@ -315,18 +364,20 @@ export async function runSynth(
           },
         };
         for (const bundle of contractsByLang) {
+          const perCallCap = Math.min(gate.cap, perPassCap);
           const result = await runContractsPass(repoId, bundle.modules, {
             llm: opts.overrides?.contractsLlm,
             model: loaded.config.passes.contracts.model,
             fallbackModel: loaded.config.passes.contracts.fallback,
             maxInputTokens: loaded.config.passes.contracts.maxInputTokens,
             maxOutputTokens: loaded.config.passes.contracts.maxOutputTokens,
-            runTokenCap: remaining(),
+            runTokenCap: perCallCap,
           });
           merged.modules.push(...result.modules);
           merged.totalTokens += result.totalTokens;
           tokensSpent += result.totalTokens;
         }
+        opts.budget?.recordSpend('contracts', merged.totalTokens);
         contractsResult = merged;
         await writeContractsArtifacts(merged.modules, {
           artifactsRoot: outDir,
@@ -373,6 +424,7 @@ export async function runSynth(
           errorMessage: (err as Error).message,
         });
       }
+      }
     }
   }
 
@@ -388,6 +440,14 @@ export async function runSynth(
       summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
     } else {
       const gotchasStartedAt = new Date();
+      const gate = await gateBudget(
+        'gotchas',
+        loaded.config.passes.gotchas.model,
+        gotchasStartedAt,
+      );
+      if ('skip' in gate) {
+        summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
+      } else {
       try {
         const result = await runGotchasPass(repoId, gotchasInputs, {
           llm: opts.overrides?.gotchasLlm,
@@ -396,10 +456,11 @@ export async function runSynth(
           maxInputTokens: loaded.config.passes.gotchas.maxInputTokens,
           maxOutputTokens: loaded.config.passes.gotchas.maxOutputTokens,
           maxLLMCalls: loaded.config.passes.gotchas.maxLLMCalls,
-          runTokenCap: remaining(),
+          runTokenCap: Math.min(gate.cap, perPassCap),
         });
         gotchasResult = result;
         tokensSpent += result.totalTokens;
+        opts.budget?.recordSpend('gotchas', result.totalTokens);
         await writeGotchasArtifacts(result.modules, { artifactsRoot: outDir });
         await writeModuleCards(outDir, result.modules, repoId, 'gotchas');
         const errors = result.modules.filter(
@@ -434,6 +495,7 @@ export async function runSynth(
           errorMessage: (err as Error).message,
         });
       }
+      }
     }
   }
 
@@ -453,6 +515,18 @@ export async function runSynth(
       summary.subsystem = { subsystemsDiscovered: 0, tokensUsed: 0, errors: 0 };
     } else {
       const subsystemStartedAt = new Date();
+      const gate = await gateBudget(
+        'subsystem',
+        loaded.config.passes.synthesis.subsystem.model,
+        subsystemStartedAt,
+      );
+      if ('skip' in gate) {
+        summary.subsystem = {
+          subsystemsDiscovered: 0,
+          tokensUsed: 0,
+          errors: 0,
+        };
+      } else {
       try {
         const result = await runSubsystemPass(
           repoId,
@@ -463,12 +537,13 @@ export async function runSynth(
             llm: opts.overrides?.subsystemLlm,
             model: loaded.config.passes.synthesis.subsystem.model,
             fallbackModel: loaded.config.passes.synthesis.subsystem.fallback,
-            runTokenCap: remaining(),
+            runTokenCap: Math.min(gate.cap, perPassCap),
             quietWarnings: true,
           },
         );
         subsystemResult = result;
         tokensSpent += result.totalTokens;
+        opts.budget?.recordSpend('subsystem', result.totalTokens);
         const artifactInputs = result.clusters
           .filter((c) => c.slug && !c.skipReason)
           .map((c) => {
@@ -524,6 +599,7 @@ export async function runSynth(
           errorMessage: (err as Error).message,
         });
       }
+      }
     }
   }
 
@@ -546,16 +622,25 @@ export async function runSynth(
       summary.repository = { tokensUsed: 0, fallbacks: 4 };
     } else {
       const repositoryStartedAt = new Date();
+      const gate = await gateBudget(
+        'synthesis-repository',
+        loaded.config.passes.synthesis.repository.model,
+        repositoryStartedAt,
+      );
+      if ('skip' in gate) {
+        summary.repository = { tokensUsed: 0, fallbacks: 4 };
+      } else {
       try {
         const result = await runRepositoryPass(repoId, repoInput, {
           llm: opts.overrides?.repositoryLlm,
           model: loaded.config.passes.synthesis.repository.model,
           fallbackModel: loaded.config.passes.synthesis.repository.fallback,
-          runTokenCap: remaining(),
+          runTokenCap: Math.min(gate.cap, perPassCap),
           quietWarnings: true,
         });
         repositoryResult = result;
         tokensSpent += result.totalTokens;
+        opts.budget?.recordSpend('synthesis-repository', result.totalTokens);
         await writeRepositoryArtifact(
           {
             repoId,
@@ -595,6 +680,7 @@ export async function runSynth(
           finishedAt: new Date(),
           errorMessage: (err as Error).message,
         });
+      }
       }
     }
   }
