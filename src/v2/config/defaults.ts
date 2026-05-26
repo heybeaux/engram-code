@@ -101,6 +101,16 @@ export const DEFAULT_CONFIG: ResolvedEngramConfig = Object.freeze({
     dailyTokenCap: DEFAULT_DAILY_TOKEN_CAP,
     perPassTokenCap: DEFAULT_PER_PASS_TOKEN_CAP,
   },
+  observations: {
+    // EC-50: disabled by default. `ingest.module.ts` flips this on when
+    // both `enabled` is true AND a non-empty `apiKey` is present (the
+    // wire-up reads `ENGRAM_API_KEY` from env when the config omits it).
+    enabled: false,
+    endpoint: 'https://api.openengram.ai',
+    apiKey: '',
+    batchSize: 25,
+    batchIntervalMs: 5_000,
+  },
   modules: {
     include: [...DEFAULT_INCLUDES],
     exclude: [...DEFAULT_EXCLUDES],

@@ -14,11 +14,18 @@
  * integration test can run the full state machine without network IO.
  */
 
-import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  Inject,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import { runSynth, type SynthOverrides } from '../cli/synth';
 import { loadConfig } from '../config';
+import { EngramEmitter } from '../observations/engram-emitter';
 import {
   persistPassRun,
   type PassRunPrismaClient,
@@ -44,6 +51,12 @@ export const INGEST_SYNTH_OVERRIDES = Symbol('INGEST_SYNTH_OVERRIDES');
 export const INGEST_PASS_RUN_RECORDER = Symbol('INGEST_PASS_RUN_RECORDER');
 export const INGEST_BUDGET_PRISMA = Symbol('INGEST_BUDGET_PRISMA');
 /**
+ * EC-50: Engram observation emitter. Optional — when bound, `IngestService`
+ * fires one observation per pass run after the ledger row is persisted.
+ * `null` skips emission entirely (default for unit tests).
+ */
+export const INGEST_ENGRAM_EMITTER = Symbol('INGEST_ENGRAM_EMITTER');
+/**
  * EC-46: Prisma client used by the incremental rescan gate. Same shape as
  * the budget Prisma — typically the wider PrismaClient — but kept on a
  * separate token so a deployer can wire one without the other.
@@ -61,10 +74,18 @@ export type PassRunRecorder = (run: PassRunInput) => Promise<void>;
  * Build a {@link PassRunRecorder} backed by a Prisma client. Swallows write
  * errors after logging — observability is best-effort and must never fail an
  * ingest.
+ *
+ * When an {@link EngramEmitter} is provided, EC-50 emits a fire-and-forget
+ * observation after the ledger row lands. The emitter is synchronous from
+ * our side (it just enqueues); the actual POST happens on its own flush
+ * timer. We deliberately call `emitPassRun` even when `persistPassRun`
+ * throws — the ledger failure shouldn't suppress the observation, and the
+ * emitter is built to swallow its own failures.
  */
 export function makePrismaPassRunRecorder(
   prisma: PassRunPrismaClient,
   logger?: { error: (msg: string) => void },
+  emitter?: EngramEmitter | null,
 ): PassRunRecorder {
   return async (run: PassRunInput) => {
     try {
@@ -73,6 +94,15 @@ export function makePrismaPassRunRecorder(
       logger?.error(
         `persistPassRun(${run.passName}) failed: ${(err as Error).message}`,
       );
+    }
+    if (emitter) {
+      try {
+        emitter.emitPassRun(run);
+      } catch (err) {
+        logger?.error(
+          `engram emit(${run.passName}) failed: ${(err as Error).message}`,
+        );
+      }
     }
   };
 }
@@ -89,7 +119,7 @@ export interface SubmitResult {
 }
 
 @Injectable()
-export class IngestService {
+export class IngestService implements OnModuleDestroy {
   private readonly logger = new Logger(IngestService.name);
   private readonly jobs = new Map<string, IngestJob>();
   /** Maps `repoId` → active job id, so duplicate URLs coalesce. */
@@ -111,7 +141,27 @@ export class IngestService {
     @Optional()
     @Inject(INGEST_INCREMENTAL_PRISMA)
     private readonly incrementalPrisma: PassRunPrismaClient | null = null,
+    @Optional()
+    @Inject(INGEST_ENGRAM_EMITTER)
+    private readonly engramEmitter: EngramEmitter | null = null,
   ) {}
+
+  /**
+   * EC-50: drain pending Engram observations before the process exits so
+   * the last batch of pass runs makes it to the API. The emitter swallows
+   * its own errors; we just kick off the shutdown.
+   */
+  async onModuleDestroy(): Promise<void> {
+    if (this.engramEmitter) {
+      try {
+        await this.engramEmitter.shutdown();
+      } catch (err) {
+        this.logger.warn(
+          `Engram emitter shutdown failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
 
   /**
    * Submit a new ingest job. If an in-flight job exists for the same
