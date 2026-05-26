@@ -19,6 +19,11 @@ import { randomUUID } from 'node:crypto';
 
 import { runSynth, type SynthOverrides } from '../cli/synth';
 import {
+  persistPassRun,
+  type PassRunPrismaClient,
+} from '../passes/pass-run.repository';
+import type { PassRunInput } from '../types/cards';
+import {
   CloneError,
   RealGitCloneAdapter,
   type GitCloneAdapter,
@@ -34,6 +39,34 @@ import { parseGitHubUrl } from './url';
 
 export const INGEST_CLONE_ADAPTER = Symbol('INGEST_CLONE_ADAPTER');
 export const INGEST_SYNTH_OVERRIDES = Symbol('INGEST_SYNTH_OVERRIDES');
+export const INGEST_PASS_RUN_RECORDER = Symbol('INGEST_PASS_RUN_RECORDER');
+
+/**
+ * Records one `pass_runs` row per pass invocation. Injected so the ingest
+ * service can persist EC-47 observability rows without taking a hard
+ * Prisma dependency in tests that don't need a database.
+ */
+export type PassRunRecorder = (run: PassRunInput) => Promise<void>;
+
+/**
+ * Build a {@link PassRunRecorder} backed by a Prisma client. Swallows write
+ * errors after logging — observability is best-effort and must never fail an
+ * ingest.
+ */
+export function makePrismaPassRunRecorder(
+  prisma: PassRunPrismaClient,
+  logger?: { error: (msg: string) => void },
+): PassRunRecorder {
+  return async (run: PassRunInput) => {
+    try {
+      await persistPassRun(prisma, run);
+    } catch (err) {
+      logger?.error(
+        `persistPassRun(${run.passName}) failed: ${(err as Error).message}`,
+      );
+    }
+  };
+}
 
 export interface SubmitInput {
   url: string;
@@ -60,6 +93,9 @@ export class IngestService {
     @Optional()
     @Inject(INGEST_SYNTH_OVERRIDES)
     private readonly synthOverrides: SynthOverrides = {},
+    @Optional()
+    @Inject(INGEST_PASS_RUN_RECORDER)
+    private readonly passRunRecorder: PassRunRecorder | null = null,
   ) {}
 
   /**
@@ -153,9 +189,7 @@ export class IngestService {
         job.error = String(err);
         job.errorKind = 'unknown';
       }
-      this.logger.error(
-        `Ingest ${id} failed at ${job.stage}: ${job.error}`,
-      );
+      this.logger.error(`Ingest ${id} failed at ${job.stage}: ${job.error}`);
     } finally {
       // Release the single-flight slot so the next submission for this
       // repoId can start a fresh run (e.g. after a fix or LLM rate-limit
@@ -199,6 +233,10 @@ export class IngestService {
         stageRouter(line);
       },
       overrides: this.synthOverrides,
+      // EC-47: persist one `pass_runs` row per pass. Recorder may be null
+      // when a test or local CLI doesn't wire Prisma — that's fine, synth
+      // still runs end-to-end.
+      onPassRun: this.passRunRecorder ?? undefined,
     });
 
     job.totalTokens = summary.totalTokens;
@@ -208,7 +246,9 @@ export class IngestService {
     try {
       const evicted = await evictIfOverCap();
       if (evicted.length > 0) {
-        this.logger.log(`Evicted ${evicted.length} repo(s): ${evicted.join(', ')}`);
+        this.logger.log(
+          `Evicted ${evicted.length} repo(s): ${evicted.join(', ')}`,
+        );
       }
     } catch (err) {
       this.logger.warn(`LRU eviction skipped: ${(err as Error).message}`);

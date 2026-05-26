@@ -155,6 +155,16 @@ model PassRun {
   /// Token spend for this run. Mechanical passes report 0.
   tokenCost       Int?
 
+  /// Wall-clock duration in milliseconds (EC-47). Computed from
+  /// `finishedAt - startedAt` at persistence time so the stats endpoint can
+  /// do `AVG(durationMs)` / percentile aggregates without a per-row subtraction.
+  durationMs      Int?
+
+  /// Free-form per-pass extras (EC-47) — e.g. fallback counts, per-LoD
+  /// breakdown, retry count. Keeps the schema additive while passes evolve
+  /// their bookkeeping.
+  metadata        Json?
+
   /// Error string when status=FAILED.
   errorMessage    String?
 

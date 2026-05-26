@@ -56,7 +56,10 @@ import {
   type StructurePassResult,
 } from '../passes/structure/orchestrator';
 import { walkRepo } from '../passes/structure/walker';
-import type { RepositoryInput, SubsystemSummary } from '../passes/repository/gatherer';
+import type {
+  RepositoryInput,
+  SubsystemSummary,
+} from '../passes/repository/gatherer';
 import {
   REPOSITORY_DEFAULT_MODEL,
   REPOSITORY_FALLBACK_MODEL,
@@ -73,7 +76,7 @@ import {
   type SubsystemPassResult,
 } from '../passes/subsystem/orchestrator';
 import { writeSubsystemArtifacts } from '../passes/subsystem/writer';
-import type { CardInput } from '../types/cards';
+import type { CardInput, PassRunInput } from '../types/cards';
 import type { Card } from '../writers/markdown/types';
 import { cardFilePath, readCard, writeCard } from '../writers/markdown/writer';
 
@@ -111,7 +114,11 @@ export interface SynthRunSummary {
   structure?: { filesWalked: number; filesParsed: number };
   contracts?: { modulesAnnotated: number; tokensUsed: number; errors: number };
   gotchas?: { modulesAnnotated: number; tokensUsed: number; errors: number };
-  subsystem?: { subsystemsDiscovered: number; tokensUsed: number; errors: number };
+  subsystem?: {
+    subsystemsDiscovered: number;
+    tokensUsed: number;
+    errors: number;
+  };
   repository?: { tokensUsed: number; fallbacks: number };
   /** Sum of LLM tokens across passes. */
   totalTokens: number;
@@ -146,6 +153,13 @@ export interface RunSynthOptions {
   overrides?: SynthOverrides;
   /** Test hook: pre-resolved config. When omitted, loaded from disk. */
   config?: ResolvedEngramConfig;
+  /**
+   * Optional hook fired once per pass with the orchestrator's
+   * {@link PassRunInput}. Used by the ingest service (EC-47) to persist a
+   * `pass_runs` row per invocation. Failures inside the hook are logged
+   * but do not fail the pass — observability must never block synthesis.
+   */
+  onPassRun?: (run: PassRunInput) => Promise<void> | void;
 }
 
 let extractorsRegistered = false;
@@ -187,12 +201,24 @@ function defaultRepoId(repoPath: string): string {
  * Entry point used by `cli.ts` for the `synth` command. The split between
  * sub-flows is in this file so cli.ts stays a router.
  */
-export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> {
+export async function runSynth(
+  opts: RunSynthOptions,
+): Promise<SynthRunSummary> {
   ensureExtractorsRegistered();
 
   const repoId = opts.repoId ?? defaultRepoId(opts.repoPath);
   const outDir = opts.outDir ?? join(opts.repoPath, '.engram', 'artifacts');
   const log = opts.log ?? (() => {});
+  const fireHook = async (run: PassRunInput): Promise<void> => {
+    if (!opts.onPassRun) return;
+    try {
+      await opts.onPassRun(run);
+    } catch (err) {
+      log(
+        `synth: onPassRun hook failed for ${run.passName}: ${(err as Error).message}`,
+      );
+    }
+  };
 
   const loaded = opts.config
     ? { config: opts.config, source: null as string | null }
@@ -217,7 +243,9 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
   // higher pass in isolation is "rebuild from scratch" semantics; nothing
   // currently persists Pass-1 results we could cheaply reload.
   log('synth: running structure pass…');
+  const structureStartedAt = new Date();
   const structure = await runStructurePass(opts.repoPath, repoId);
+  const structureFinishedAt = new Date();
   summary.structure = {
     filesWalked: structure.filesWalked,
     filesParsed: structure.filesParsed,
@@ -225,6 +253,16 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
   log(
     `synth: structure → ${structure.filesParsed} files parsed, ${structure.nodes.length} nodes`,
   );
+  // Structure pass is mechanical (no LLM), so we synthesize the PassRunInput
+  // here rather than reach into the orchestrator's return.
+  await fireHook({
+    repoId,
+    passName: 'structure',
+    status: 'SUCCESS',
+    startedAt: structureStartedAt,
+    finishedAt: structureFinishedAt,
+    tokenCost: 0,
+  });
 
   // Pull source bodies once — both contracts and gotchas need them.
   const sources = await loadRepoSources(opts.repoPath, structure);
@@ -252,12 +290,15 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
     );
     if (opts.dryRun) {
       // One LLM call per module with at least one symbol.
-      const planned = allContractsModules.filter((m) => m.symbols.length > 0).length;
+      const planned = allContractsModules.filter(
+        (m) => m.symbols.length > 0,
+      ).length;
       summary.plannedCalls!.contracts = planned;
     } else if (remaining() <= 0) {
       log('synth: contracts skipped — token cap exhausted');
       summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
     } else {
+      const contractsStartedAt = new Date();
       try {
         const merged: ContractsPassResult = {
           repoId,
@@ -269,8 +310,8 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
             status: 'SUCCESS',
             model: loaded.config.passes.contracts.model,
             tokenCost: 0,
-            startedAt: new Date(),
-            finishedAt: new Date(),
+            startedAt: contractsStartedAt,
+            finishedAt: contractsStartedAt,
           },
         };
         for (const bundle of contractsByLang) {
@@ -287,7 +328,9 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
           tokensSpent += result.totalTokens;
         }
         contractsResult = merged;
-        await writeContractsArtifacts(merged.modules, { artifactsRoot: outDir });
+        await writeContractsArtifacts(merged.modules, {
+          artifactsRoot: outDir,
+        });
         await writeModuleCards(outDir, merged.modules, repoId, 'contracts');
         const errors = merged.modules.filter(
           (m) => m.skipReason === 'llm-error',
@@ -302,9 +345,33 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
           `synth: contracts → ${annotated} module card(s), ${merged.totalTokens} tokens` +
             (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
         );
+        await fireHook({
+          repoId,
+          passName: 'contracts',
+          status: errors > 0 && annotated === 0 ? 'FAILED' : 'SUCCESS',
+          model: loaded.config.passes.contracts.model,
+          tokenCost: merged.totalTokens,
+          startedAt: contractsStartedAt,
+          finishedAt: new Date(),
+          errorMessage:
+            errors > 0
+              ? `${errors}/${merged.modules.length} module(s) failed`
+              : undefined,
+        });
       } catch (err) {
+        const finishedAt = new Date();
         log(`synth: contracts pass failed: ${(err as Error).message}`);
         summary.contracts = { modulesAnnotated: 0, tokensUsed: 0, errors: 1 };
+        await fireHook({
+          repoId,
+          passName: 'contracts',
+          status: 'FAILED',
+          model: loaded.config.passes.contracts.model,
+          tokenCost: 0,
+          startedAt: contractsStartedAt,
+          finishedAt,
+          errorMessage: (err as Error).message,
+        });
       }
     }
   }
@@ -320,6 +387,7 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
       log('synth: gotchas skipped — token cap exhausted');
       summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 0 };
     } else {
+      const gotchasStartedAt = new Date();
       try {
         const result = await runGotchasPass(repoId, gotchasInputs, {
           llm: opts.overrides?.gotchasLlm,
@@ -347,9 +415,24 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
           `synth: gotchas → ${annotated} module card(s), ${result.totalTokens} tokens` +
             (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
         );
+        await fireHook({
+          ...result.passRun,
+          startedAt: gotchasStartedAt,
+          finishedAt: new Date(),
+        });
       } catch (err) {
         log(`synth: gotchas pass failed: ${(err as Error).message}`);
         summary.gotchas = { modulesAnnotated: 0, tokensUsed: 0, errors: 1 };
+        await fireHook({
+          repoId,
+          passName: 'gotchas',
+          status: 'FAILED',
+          model: loaded.config.passes.gotchas.model,
+          tokenCost: 0,
+          startedAt: gotchasStartedAt,
+          finishedAt: new Date(),
+          errorMessage: (err as Error).message,
+        });
       }
     }
   }
@@ -358,7 +441,9 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
   let subsystemResult: SubsystemPassResult | undefined;
   if (runSubsystem) {
     const moduleNodes = buildModuleNodes(structure.nodes);
-    log(`synth: subsystem → ${moduleNodes.length} module(s) input to clustering`);
+    log(
+      `synth: subsystem → ${moduleNodes.length} module(s) input to clustering`,
+    );
     if (opts.dryRun) {
       // Without running the detector we can't know the exact cluster count;
       // report the upper bound (1 LLM call per cluster, capped at MAX_SUBSYSTEMS=15).
@@ -367,6 +452,7 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
       log('synth: subsystem skipped — token cap exhausted');
       summary.subsystem = { subsystemsDiscovered: 0, tokensUsed: 0, errors: 0 };
     } else {
+      const subsystemStartedAt = new Date();
       try {
         const result = await runSubsystemPass(
           repoId,
@@ -399,7 +485,9 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
             };
           })
           .filter((a): a is NonNullable<typeof a> => a !== null);
-        await writeSubsystemArtifacts(artifactInputs, { artifactsRoot: outDir });
+        await writeSubsystemArtifacts(artifactInputs, {
+          artifactsRoot: outDir,
+        });
         await writeSubsystemCards(outDir, result, repoId);
         const errors = result.clusters.filter(
           (c) => c.skipReason === 'llm-error',
@@ -413,6 +501,11 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
           `synth: subsystem → ${result.subsystems.length} subsystem(s), ${result.totalTokens} tokens` +
             (errors > 0 ? `, ${errors} error(s) (continuing)` : ''),
         );
+        await fireHook({
+          ...result.passRun,
+          startedAt: subsystemStartedAt,
+          finishedAt: new Date(),
+        });
       } catch (err) {
         log(`synth: subsystem pass failed: ${(err as Error).message}`);
         summary.subsystem = {
@@ -420,6 +513,16 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
           tokensUsed: 0,
           errors: 1,
         };
+        await fireHook({
+          repoId,
+          passName: 'subsystem',
+          status: 'FAILED',
+          model: loaded.config.passes.synthesis.subsystem.model,
+          tokenCost: 0,
+          startedAt: subsystemStartedAt,
+          finishedAt: new Date(),
+          errorMessage: (err as Error).message,
+        });
       }
     }
   }
@@ -442,6 +545,7 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
       log('synth: repository skipped — token cap exhausted');
       summary.repository = { tokensUsed: 0, fallbacks: 4 };
     } else {
+      const repositoryStartedAt = new Date();
       try {
         const result = await runRepositoryPass(repoId, repoInput, {
           llm: opts.overrides?.repositoryLlm,
@@ -473,9 +577,24 @@ export async function runSynth(opts: RunSynthOptions): Promise<SynthRunSummary> 
           `synth: repository → ${result.totalTokens} tokens` +
             (fallbacks > 0 ? `, ${fallbacks} LoD fallback(s)` : ''),
         );
+        await fireHook({
+          ...result.passRun,
+          startedAt: repositoryStartedAt,
+          finishedAt: new Date(),
+        });
       } catch (err) {
         log(`synth: repository pass failed: ${(err as Error).message}`);
         summary.repository = { tokensUsed: 0, fallbacks: 4 };
+        await fireHook({
+          repoId,
+          passName: 'synthesis-repository',
+          status: 'FAILED',
+          model: loaded.config.passes.synthesis.repository.model,
+          tokenCost: 0,
+          startedAt: repositoryStartedAt,
+          finishedAt: new Date(),
+          errorMessage: (err as Error).message,
+        });
       }
     }
   }
@@ -626,7 +745,7 @@ function buildRepositoryInput(
   let readme: string | undefined;
   try {
     // Synchronous read here is fine — single small file at the repo root.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { readFileSync } = require('node:fs');
     readme = readFileSync(join(repoPath, 'README.md'), 'utf8');
   } catch {
@@ -636,7 +755,8 @@ function buildRepositoryInput(
   const summaries: SubsystemSummary[] = subsystemResult
     ? subsystemResult.subsystems.map((s) => {
         const card = subsystemResult.cards.find(
-          (c) => c.conceptPath === `${subsystemResult.repoId}/subsystems/${s.slug}`,
+          (c) =>
+            c.conceptPath === `${subsystemResult.repoId}/subsystems/${s.slug}`,
         );
         return {
           name: s.name,
@@ -877,7 +997,9 @@ export function renderSummary(summary: SynthRunSummary): string {
 
 // Tests that need to exercise the LLM injection path without an
 // orchestrator round-trip may use this no-op LLM client.
-export const NOOP_LLM_CLIENT: LLMClient = async (req: LLMRequest): Promise<LLMResponse> => {
+export const NOOP_LLM_CLIENT: LLMClient = async (
+  req: LLMRequest,
+): Promise<LLMResponse> => {
   return {
     model: req.model,
     content: '',
