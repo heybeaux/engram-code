@@ -107,3 +107,4 @@ require('tree-sitter-typescript');
 require('tree-sitter-go');
 require('tree-sitter-elixir');
 require('tree-sitter-rust');
+require('tree-sitter-swift');
