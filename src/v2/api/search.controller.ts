@@ -28,7 +28,7 @@ import type {
   SearchConceptRequestDto,
   SearchConceptResponseDto,
 } from './dto';
-import { CardsFsService } from './services/cards-fs.service';
+import { CardsFsService, isValidRepoId } from './services/cards-fs.service';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
@@ -71,10 +71,11 @@ export class SearchConceptController {
     const lod = validateLod(body?.lod) ?? 'summary';
     const level = validateLevel(body?.level);
     const limit = validateLimit(body?.limit);
+    const repoId = validateRepoIdBody(body?.repoId);
 
     let cards: Card[];
     try {
-      cards = await this.cardsFs.readAll();
+      cards = await this.cardsFs.readAll(repoId);
     } catch (err) {
       this.logger.error('Failed to read cards for search', err as Error);
       throw new HttpException(
@@ -152,6 +153,17 @@ function validateLimit(raw: unknown): number {
     );
   }
   return Math.min(n, MAX_LIMIT);
+}
+
+function validateRepoIdBody(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (typeof raw !== 'string' || !isValidRepoId(raw)) {
+    throw new HttpException(
+      `Invalid repoId "${String(raw)}"; must match /^[A-Za-z0-9._-]+$/`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return raw;
 }
 
 interface Scored {

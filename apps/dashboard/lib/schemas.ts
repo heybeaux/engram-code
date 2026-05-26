@@ -98,3 +98,70 @@ export const subsystemListResponseSchema = z.object({
   count: z.number().int().nonnegative(),
 });
 export type SubsystemListResponse = z.infer<typeof subsystemListResponseSchema>;
+
+export const repoSummarySchema = z.object({
+  repoId: z.string(),
+  cardCount: z.number().int().nonnegative(),
+  hasRepository: z.boolean(),
+  lastUpdated: z.string().nullable(),
+});
+export type RepoSummary = z.infer<typeof repoSummarySchema>;
+
+export const reposListResponseSchema = z.object({
+  repos: z.array(repoSummarySchema),
+  count: z.number().int().nonnegative(),
+});
+export type ReposListResponse = z.infer<typeof reposListResponseSchema>;
+
+export const ingestStageSchema = z.enum([
+  'queued',
+  'cloning',
+  'structure',
+  'contracts',
+  'gotchas',
+  'subsystem',
+  'repository',
+  'done',
+]);
+export type IngestStage = z.infer<typeof ingestStageSchema>;
+
+export const ingestStatusSchema = z.enum(['queued', 'running', 'ready', 'failed']);
+export type IngestStatus = z.infer<typeof ingestStatusSchema>;
+
+export const ingestFailureKindSchema = z.enum([
+  'not-found',
+  'private',
+  'network',
+  'too-large',
+  'rate-limit',
+  'unknown',
+]);
+export type IngestFailureKind = z.infer<typeof ingestFailureKindSchema>;
+
+export const ingestJobSchema = z.object({
+  id: z.string(),
+  repoId: z.string(),
+  url: z.string(),
+  ref: z.string().optional(),
+  status: ingestStatusSchema,
+  stage: ingestStageSchema,
+  progress: z.number().int().min(0).max(100),
+  startedAt: z.string(),
+  finishedAt: z.string().optional(),
+  error: z.string().optional(),
+  errorKind: ingestFailureKindSchema.optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+});
+export type IngestJob = z.infer<typeof ingestJobSchema>;
+
+export const ingestSubmitResponseSchema = z.object({
+  job: ingestJobSchema,
+  coalesced: z.boolean(),
+});
+export type IngestSubmitResponse = z.infer<typeof ingestSubmitResponseSchema>;
+
+export const ingestListResponseSchema = z.object({
+  jobs: z.array(ingestJobSchema),
+  count: z.number().int().nonnegative(),
+});
+export type IngestListResponse = z.infer<typeof ingestListResponseSchema>;

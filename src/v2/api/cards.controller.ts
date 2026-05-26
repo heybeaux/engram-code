@@ -37,7 +37,7 @@ import type {
   CardListResponseDto,
   CardResponseDto,
 } from './dto';
-import { CardsFsService } from './services/cards-fs.service';
+import { CardsFsService, isValidRepoId } from './services/cards-fs.service';
 
 /** Valid `?lod=` query values. Mirrors `LoDContent` keys. */
 const VALID_LODS: readonly (keyof LoDContent)[] = [
@@ -63,10 +63,11 @@ export class CardsController {
    * Cheap O(n) scan; future revisions will back this with the `cards` table.
    */
   @Get()
-  async list(): Promise<CardListResponseDto> {
+  async list(@Query('repo') repoParam?: string): Promise<CardListResponseDto> {
+    const repoId = validateRepoId(repoParam);
     let conceptPaths: string[];
     try {
-      conceptPaths = await this.cardsFs.listConceptPaths();
+      conceptPaths = await this.cardsFs.listConceptPaths(repoId);
     } catch (err) {
       this.logger.error('Failed to enumerate cards', err as Error);
       throw new HttpException(
@@ -96,6 +97,7 @@ export class CardsController {
   async get(
     @Param('path') rawPath: string | string[],
     @Query('lod') lodParam?: string,
+    @Query('repo') repoParam?: string,
   ): Promise<CardResponseDto> {
     const conceptPath = normalizeConceptPath(rawPath);
     if (conceptPath === '') {
@@ -106,10 +108,11 @@ export class CardsController {
     }
 
     const lod = validateLod(lodParam);
+    const repoId = validateRepoId(repoParam);
 
     let card;
     try {
-      card = await this.cardsFs.readOne(conceptPath);
+      card = await this.cardsFs.readOne(conceptPath, repoId);
     } catch (err) {
       this.logger.error(`Failed to read card ${conceptPath}`, err as Error);
       throw new HttpException(
@@ -170,4 +173,21 @@ function validateLod(raw: string | undefined): keyof LoDContent {
     `Invalid lod "${raw}"; must be one of ${VALID_LODS.join('|')}`,
     HttpStatus.BAD_REQUEST,
   );
+}
+
+/**
+ * Validate the `?repo=` query parameter. Returns `undefined` when omitted
+ * so callers fall through to the legacy single-repo behavior; throws 400
+ * for malformed ids (path traversal, special chars) so we never resolve a
+ * dangerous path under the artifacts root.
+ */
+function validateRepoId(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (!isValidRepoId(raw)) {
+    throw new HttpException(
+      `Invalid repo "${raw}"; must match /^[A-Za-z0-9._-]+$/`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return raw;
 }

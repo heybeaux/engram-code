@@ -9,13 +9,21 @@
 
 import {
   cardResponseSchema,
+  ingestJobSchema,
+  ingestListResponseSchema,
+  ingestSubmitResponseSchema,
   mapResponseSchema,
+  reposListResponseSchema,
   searchConceptResponseSchema,
   subsystemListResponseSchema,
   type CardKind,
   type CardResponse,
+  type IngestJob,
+  type IngestListResponse,
+  type IngestSubmitResponse,
   type LodLevel,
   type MapResponse,
+  type ReposListResponse,
   type SearchConceptResponse,
   type SubsystemListResponse,
 } from './schemas';
@@ -29,6 +37,7 @@ export interface SearchConceptOptions {
   level?: CardKind;
   lod?: LodLevel;
   limit?: number;
+  repoId?: string;
 }
 
 export class ApiError extends Error {
@@ -60,17 +69,29 @@ export class EngramCodeApi {
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  async getCard(path: string, lod?: LodLevel): Promise<CardResponse> {
+  async getCard(
+    path: string,
+    lod?: LodLevel,
+    repoId?: string,
+  ): Promise<CardResponse> {
     const encoded = encodeConceptPath(path);
-    const search = lod ? `?lod=${encodeURIComponent(lod)}` : '';
-    const url = `${this.baseUrl}/v1/cards/${encoded}${search}`;
+    const params = new URLSearchParams();
+    if (lod) params.set('lod', lod);
+    if (repoId) params.set('repo', repoId);
+    const qs = params.toString();
+    const url = `${this.baseUrl}/v1/cards/${encoded}${qs ? `?${qs}` : ''}`;
     return this.request(url, cardResponseSchema);
   }
 
-  async getMap(root?: string, depth?: number): Promise<MapResponse> {
+  async getMap(
+    root?: string,
+    depth?: number,
+    repoId?: string,
+  ): Promise<MapResponse> {
     const params = new URLSearchParams();
     if (root && root !== '') params.set('root', root);
     if (depth !== undefined) params.set('depth', String(depth));
+    if (repoId) params.set('repo', repoId);
     const qs = params.toString();
     const url = `${this.baseUrl}/v1/map${qs ? `?${qs}` : ''}`;
     return this.request(url, mapResponseSchema);
@@ -85,6 +106,7 @@ export class EngramCodeApi {
     if (opts.level !== undefined) body.level = opts.level;
     if (opts.lod !== undefined) body.lod = opts.lod;
     if (opts.limit !== undefined) body.limit = opts.limit;
+    if (opts.repoId !== undefined && opts.repoId !== '') body.repoId = opts.repoId;
     return this.request(url, searchConceptResponseSchema, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -92,9 +114,41 @@ export class EngramCodeApi {
     });
   }
 
-  async listSubsystems(): Promise<SubsystemListResponse> {
-    const url = `${this.baseUrl}/v1/subsystems`;
+  async listSubsystems(repoId?: string): Promise<SubsystemListResponse> {
+    const params = new URLSearchParams();
+    if (repoId) params.set('repo', repoId);
+    const qs = params.toString();
+    const url = `${this.baseUrl}/v1/subsystems${qs ? `?${qs}` : ''}`;
     return this.request(url, subsystemListResponseSchema);
+  }
+
+  async listRepos(): Promise<ReposListResponse> {
+    const url = `${this.baseUrl}/v1/repos`;
+    return this.request(url, reposListResponseSchema);
+  }
+
+  async submitIngest(url: string, ref?: string): Promise<IngestSubmitResponse> {
+    const endpoint = `${this.baseUrl}/v1/ingest/github`;
+    const body: Record<string, unknown> = { url };
+    if (ref !== undefined && ref !== '') body.ref = ref;
+    return this.request(endpoint, ingestSubmitResponseSchema, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async getIngest(id: string): Promise<IngestJob> {
+    const url = `${this.baseUrl}/v1/ingest/${encodeURIComponent(id)}`;
+    return this.request(url, ingestJobSchema);
+  }
+
+  async listIngests(limit?: number): Promise<IngestListResponse> {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set('limit', String(limit));
+    const qs = params.toString();
+    const url = `${this.baseUrl}/v1/ingest${qs ? `?${qs}` : ''}`;
+    return this.request(url, ingestListResponseSchema);
   }
 
   private async request<T>(
@@ -138,8 +192,15 @@ async function safeReadText(res: Response): Promise<string> {
 /** Convenience singleton for callers that don't need a custom instance. */
 export const api = new EngramCodeApi();
 
-export const getCard = (path: string, lod?: LodLevel) => api.getCard(path, lod);
-export const getMap = (root?: string, depth?: number) => api.getMap(root, depth);
+export const getCard = (path: string, lod?: LodLevel, repoId?: string) =>
+  api.getCard(path, lod, repoId);
+export const getMap = (root?: string, depth?: number, repoId?: string) =>
+  api.getMap(root, depth, repoId);
 export const searchConcept = (query: string, opts?: SearchConceptOptions) =>
   api.searchConcept(query, opts);
-export const listSubsystems = () => api.listSubsystems();
+export const listSubsystems = (repoId?: string) => api.listSubsystems(repoId);
+export const listRepos = () => api.listRepos();
+export const submitIngest = (url: string, ref?: string) =>
+  api.submitIngest(url, ref);
+export const getIngest = (id: string) => api.getIngest(id);
+export const listIngests = (limit?: number) => api.listIngests(limit);

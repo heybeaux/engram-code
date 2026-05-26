@@ -7,3 +7,7 @@ node_modules
 # Compiled output — rebuilt by `pnpm build`; not source-of-truth.
 dist/
 coverage/
+
+# Local runtime scratch — Engram MCP cache and ruvector dev DB.
+.engram/
+ruvector.db
