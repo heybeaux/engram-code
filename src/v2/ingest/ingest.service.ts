@@ -18,11 +18,13 @@ import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import { runSynth, type SynthOverrides } from '../cli/synth';
+import { loadConfig } from '../config';
 import {
   persistPassRun,
   type PassRunPrismaClient,
 } from '../passes/pass-run.repository';
 import type { PassRunInput } from '../types/cards';
+import { BudgetTracker } from './budget-tracker';
 import {
   CloneError,
   RealGitCloneAdapter,
@@ -40,6 +42,7 @@ import { parseGitHubUrl } from './url';
 export const INGEST_CLONE_ADAPTER = Symbol('INGEST_CLONE_ADAPTER');
 export const INGEST_SYNTH_OVERRIDES = Symbol('INGEST_SYNTH_OVERRIDES');
 export const INGEST_PASS_RUN_RECORDER = Symbol('INGEST_PASS_RUN_RECORDER');
+export const INGEST_BUDGET_PRISMA = Symbol('INGEST_BUDGET_PRISMA');
 
 /**
  * Records one `pass_runs` row per pass invocation. Injected so the ingest
@@ -96,6 +99,9 @@ export class IngestService {
     @Optional()
     @Inject(INGEST_PASS_RUN_RECORDER)
     private readonly passRunRecorder: PassRunRecorder | null = null,
+    @Optional()
+    @Inject(INGEST_BUDGET_PRISMA)
+    private readonly budgetPrisma: PassRunPrismaClient | null = null,
   ) {}
 
   /**
@@ -223,6 +229,28 @@ export class IngestService {
     };
 
     const artifactsDir = artifactsDirFor(job.repoId);
+
+    // EC-48: build a BudgetTracker per run when Prisma is wired. The tracker
+    // reads today's historical spend from `pass_runs` and gates each pass.
+    // When Prisma isn't available (test mode), we skip budget enforcement
+    // and synth falls back to its EC-47 dailyTokenCap counter.
+    let budget: BudgetTracker | undefined;
+    if (this.budgetPrisma) {
+      try {
+        const { config } = await loadConfig({ startDir: scratchDir });
+        budget = new BudgetTracker({
+          dailyCap: config.budget.dailyTokenCap,
+          perPassCap: config.budget.perPassTokenCap,
+          prisma: this.budgetPrisma,
+          repoId: job.repoId,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `BudgetTracker init skipped: ${(err as Error).message}`,
+        );
+      }
+    }
+
     const summary = await runSynth({
       repoPath: scratchDir,
       subcommand: 'all',
@@ -237,6 +265,8 @@ export class IngestService {
       // when a test or local CLI doesn't wire Prisma — that's fine, synth
       // still runs end-to-end.
       onPassRun: this.passRunRecorder ?? undefined,
+      // EC-48: per-pass + daily token caps, enforced before each pass.
+      budget,
     });
 
     job.totalTokens = summary.totalTokens;

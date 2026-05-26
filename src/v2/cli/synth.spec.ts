@@ -22,6 +22,8 @@ import {
   runSynth,
 } from './synth';
 import { mergeWithDefaults } from '../config';
+import { BudgetTracker } from '../ingest/budget-tracker';
+import type { PassRunPrismaClient } from '../passes/pass-run.repository';
 
 interface CapturedIO {
   out: string;
@@ -302,6 +304,54 @@ describe('engram-code synth', () => {
       expect(summary.repository).toBeDefined();
       expect(existsSync(join(outDir, 'cards', `${REPOSITORY_CARD_CONCEPT_PATH}.md`)))
         .toBe(true);
+    });
+
+    it('aborts later passes when BudgetTracker daily cap of 100 is exhausted (EC-48)', async () => {
+      // In-memory Prisma fake — minimal surface for BudgetTracker.queryDailyHistoricalSpend.
+      const fakePrisma: PassRunPrismaClient = {
+        passRun: {
+          create: async () => ({}) as never,
+          findMany: async () => [],
+        },
+      } as unknown as PassRunPrismaClient;
+
+      const tracker = new BudgetTracker({
+        dailyCap: 100,
+        perPassCap: 100,
+        prisma: fakePrisma,
+        repoId: 'tiny',
+      });
+
+      // Contracts mock spends 150 tokens, blowing through the daily cap on
+      // the very first pass. The tracker should then refuse to start the
+      // remaining passes.
+      const recorded: Array<{ pass: string; status: string }> = [];
+
+      const summary = await runSynth({
+        repoPath,
+        outDir,
+        repoId: 'tiny',
+        subcommand: 'all',
+        overrides: {
+          contractsLlm: contractsLlm(),
+          gotchasLlm: gotchasLlm(),
+          subsystemLlm: subsystemLlm(),
+          repositoryLlm: repositoryLlm(),
+        },
+        budget: tracker,
+        onPassRun: (run) => {
+          recorded.push({ pass: run.passName, status: run.status });
+        },
+      });
+
+      // Contracts ran and consumed tokens.
+      expect(summary.contracts?.tokensUsed).toBeGreaterThan(0);
+      // At least one downstream pass must be marked FAILED with the
+      // budget-exceeded reason.
+      const budgetFailures = recorded.filter(
+        (r) => r.status === 'FAILED' && r.pass !== 'contracts',
+      );
+      expect(budgetFailures.length).toBeGreaterThanOrEqual(1);
     });
 
     it('individual subcommand `repository` runs structure + repository only', async () => {

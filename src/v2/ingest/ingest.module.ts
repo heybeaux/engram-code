@@ -12,6 +12,7 @@ import { Module } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IngestController } from './ingest.controller';
 import {
+  INGEST_BUDGET_PRISMA,
   INGEST_PASS_RUN_RECORDER,
   IngestService,
   makePrismaPassRunRecorder,
@@ -28,6 +29,11 @@ import {
         makePrismaPassRunRecorder(prisma, {
           error: (msg) => console.error(`[ingest pass-run] ${msg}`),
         }),
+      inject: [PrismaService],
+    },
+    {
+      provide: INGEST_BUDGET_PRISMA,
+      useFactory: (prisma: PrismaService) => prisma,
       inject: [PrismaService],
     },
   ],
