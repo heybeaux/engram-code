@@ -510,6 +510,27 @@ On M2 MacBook Pro:
 | Single-model search | ~40ms |
 | Ensemble search (3 models) | ~80ms |
 
+## Running tests
+
+```bash
+pnpm test          # unit + parser + eval suites (no DB required)
+pnpm run smoke     # EC-20 HTTP smoke for /v1/cards/:path
+pnpm run test:e2e  # full e2e suite (requires Postgres)
+```
+
+### Smoke test (EC-20)
+
+`pnpm run smoke` runs `test/cards-api.smoke.e2e-spec.ts` end-to-end:
+
+1. Runs `engram-code index` against `test/fixtures/smoke-repo/`
+2. Boots Nest with `ENGRAM_ARTIFACTS_ROOT` pointed at the indexed output
+3. Issues `GET /v1/cards` and `GET /v1/cards/:path?lod=summary` via supertest
+4. Asserts 200 + the response body matches the on-disk card byte-for-byte
+
+No database is required — the smoke mounts only `CardsModule` so the
+filesystem read path (`src/v2/api/cards.controller.ts`,
+`src/v2/api/services/cards-fs.service.ts`) is exercised in isolation.
+
 ## License
 
 MIT
