@@ -79,6 +79,11 @@ import {
 } from '../passes/repository/orchestrator';
 import { writeRepositoryArtifact } from '../passes/repository/writer';
 import {
+  runHotspotsPass,
+  type HotspotsPassResult,
+} from '../passes/hotspots/orchestrator';
+import { writeHotspotCards } from '../passes/hotspots/writer';
+import {
   buildModuleNodes,
   SUBSYSTEM_DEFAULT_MODEL,
   SUBSYSTEM_FALLBACK_MODEL,
@@ -101,13 +106,15 @@ export type SynthSubcommand =
   | 'contracts'
   | 'gotchas'
   | 'subsystem'
-  | 'repository';
+  | 'repository'
+  | 'hotspots';
 
 const VALID_SUBCOMMANDS: readonly string[] = [
   'contracts',
   'gotchas',
   'subsystem',
   'repository',
+  'hotspots',
 ];
 
 /**
@@ -130,6 +137,16 @@ export interface SynthRunSummary {
     errors: number;
   };
   repository?: { tokensUsed: number; fallbacks: number };
+  /**
+   * Hotspots pass (deterministic, no LLM). `scoredFiles` is every file the
+   * collectors scored; `hotspotsFound` is the subset above the score
+   * threshold; `cardsWritten` is `hotspotsFound + 1` (the roll-up).
+   */
+  hotspots?: {
+    scoredFiles: number;
+    hotspotsFound: number;
+    cardsWritten: number;
+  };
   /** Sum of LLM tokens across passes. */
   totalTokens: number;
   /** Per-pass planned LLM call counts (dry-run only). */
@@ -390,6 +407,8 @@ export async function runSynth(
     opts.subcommand === 'all' || opts.subcommand === 'subsystem';
   const runRepository =
     opts.subcommand === 'all' || opts.subcommand === 'repository';
+  const runHotspots =
+    opts.subcommand === 'all' || opts.subcommand === 'hotspots';
 
   // ─── Contracts ──────────────────────────────────────────────────────────
   let contractsResult: ContractsPassResult | undefined;
@@ -798,14 +817,104 @@ export async function runSynth(
     }
   }
 
+  // ─── Hotspots (Pass 4, deterministic, EC-45) ────────────────────────────
+  // No LLM, so no token spend — but still gated by `gateIncremental` so we
+  // skip when nothing has changed, and still emits a `pass_runs` row via
+  // `fireHook` for the dashboard. Budget tracker is intentionally NOT
+  // consulted: a zero-cost pass that's already gated by the incremental
+  // cache doesn't need a daily-cap check.
+  let hotspotsResult: HotspotsPassResult | undefined;
+  if (runHotspots) {
+    // Build the per-file inventory from the structure pass. We want one
+    // entry per source file, not per node (a single file produces many
+    // structure nodes).
+    const repoRelFiles = collectUniqueFilePaths(structure);
+    if (opts.dryRun) {
+      // Hotspots makes zero LLM calls. Report 0 so dry-run reflects reality.
+      summary.plannedCalls!.hotspots = 0;
+    } else if (repoRelFiles.length === 0) {
+      log('synth: hotspots skipped — no source files in structure pass');
+      summary.hotspots = { scoredFiles: 0, hotspotsFound: 0, cardsWritten: 0 };
+    } else {
+      const hotspotsStartedAt = new Date();
+      const inc = await gateIncremental('hotspots', hotspotsStartedAt);
+      if (inc.skip) {
+        summary.hotspots = {
+          scoredFiles: 0,
+          hotspotsFound: 0,
+          cardsWritten: 0,
+        };
+      } else {
+        try {
+          const absFiles = repoRelFiles.map((rel) => join(opts.repoPath, rel));
+          const result = await runHotspotsPass(repoId, {
+            files: absFiles,
+            repoRoot: opts.repoPath,
+          });
+          hotspotsResult = result;
+          const write = await writeHotspotCards({
+            outDir,
+            repoId,
+            cards: result.cards,
+          });
+          summary.hotspots = {
+            scoredFiles: result.scores.length,
+            hotspotsFound: result.hotspots.length,
+            cardsWritten: write.cardsWritten,
+          };
+          log(
+            `synth: hotspots → ${result.scores.length} file(s) scored, ` +
+              `${result.hotspots.length} hotspot(s), ` +
+              `${write.cardsWritten} card(s) written`,
+          );
+          await fireHook({
+            ...result.passRun,
+            startedAt: hotspotsStartedAt,
+            finishedAt: new Date(),
+          });
+        } catch (err) {
+          log(`synth: hotspots pass failed: ${(err as Error).message}`);
+          summary.hotspots = {
+            scoredFiles: 0,
+            hotspotsFound: 0,
+            cardsWritten: 0,
+          };
+          await fireHook({
+            repoId,
+            passName: 'hotspots',
+            status: 'FAILED',
+            tokenCost: 0,
+            startedAt: hotspotsStartedAt,
+            finishedAt: new Date(),
+            errorMessage: (err as Error).message,
+          });
+        }
+      }
+    }
+  }
+
   summary.totalTokens = tokensSpent;
 
   // Reference unused locals so future maintainers see the result objects
   // are preserved for debugging.
   void contractsResult;
   void gotchasResult;
+  void hotspotsResult;
 
   return summary;
+}
+
+/**
+ * Distinct source-file inventory drawn from the structure-pass nodes. Used
+ * by the hotspots pass as its per-file universe. Returns repo-relative
+ * POSIX paths.
+ */
+function collectUniqueFilePaths(structure: StructurePassResult): string[] {
+  const out = new Set<string>();
+  for (const node of structure.nodes) {
+    if (node.filePath) out.add(node.filePath);
+  }
+  return Array.from(out).sort();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
