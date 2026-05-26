@@ -13,6 +13,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { IngestController } from './ingest.controller';
 import {
   INGEST_BUDGET_PRISMA,
+  INGEST_INCREMENTAL_PRISMA,
   INGEST_PASS_RUN_RECORDER,
   IngestService,
   makePrismaPassRunRecorder,
@@ -33,6 +34,13 @@ import {
     },
     {
       provide: INGEST_BUDGET_PRISMA,
+      useFactory: (prisma: PrismaService) => prisma,
+      inject: [PrismaService],
+    },
+    {
+      // EC-46: incremental rescans need the same Prisma client; bind it
+      // under its own token so a deployer could swap in a read-replica.
+      provide: INGEST_INCREMENTAL_PRISMA,
       useFactory: (prisma: PrismaService) => prisma,
       inject: [PrismaService],
     },

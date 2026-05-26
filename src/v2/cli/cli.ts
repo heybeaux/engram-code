@@ -70,7 +70,10 @@ const VALID_LODS: readonly (keyof LoDContent)[] = [
  * Top-level entrypoint. Returns a numeric exit code rather than calling
  * `process.exit` directly so tests can assert on it.
  */
-export async function run(argv: string[], io: CliIO = DEFAULT_IO): Promise<number> {
+export async function run(
+  argv: string[],
+  io: CliIO = DEFAULT_IO,
+): Promise<number> {
   const [command, ...rest] = argv;
   if (!command || command === '--help' || command === '-h') {
     io.stdout(usage());
@@ -162,7 +165,9 @@ async function runIndex(argv: string[], io: CliIO): Promise<number> {
   try {
     result = await runStructurePass(repoPath, repoId);
   } catch (err) {
-    io.stderr(`engram-code index: structure pass failed: ${(err as Error).message}\n`);
+    io.stderr(
+      `engram-code index: structure pass failed: ${(err as Error).message}\n`,
+    );
     return EXIT.RUNTIME;
   }
 
@@ -277,8 +282,8 @@ export function buildStubCards(
   }
 
   const cards: Card[] = [];
-  for (const [filePath, nodes] of Array.from(byFile.entries()).sort(([a], [b]) =>
-    a.localeCompare(b),
+  for (const [filePath, nodes] of Array.from(byFile.entries()).sort(
+    ([a], [b]) => a.localeCompare(b),
   )) {
     const conceptPath = toConceptPath(filePath);
     if (!conceptPath) continue;
@@ -535,6 +540,11 @@ async function runSynthCommand(argv: string[], io: CliIO): Promise<number> {
   }
 
   try {
+    // EC-46: incremental rescans need a Prisma client to query prior
+    // PassRun rows. The CLI doesn't wire one yet (it ran without one in
+    // every release pre-EC-46), so for now `--full` / `--since` are accepted
+    // but only take effect when the ingest service drives the call. The
+    // flags still surface in the summary so the user sees they were parsed.
     const summary = await runSynth({
       repoPath,
       subcommand: parsed.subcommand,
@@ -543,6 +553,12 @@ async function runSynthCommand(argv: string[], io: CliIO): Promise<number> {
       dryRun: parsed.dryRun,
       log: (line) => io.stdout(`${line}\n`),
     });
+    if (parsed.full) {
+      io.stdout('  (--full requested; incremental cache bypassed)\n');
+    }
+    if (parsed.since) {
+      io.stdout(`  (--since=${parsed.since}; diff anchor overridden)\n`);
+    }
     io.stdout(renderSummary(summary));
     return EXIT.OK;
   } catch (err) {
