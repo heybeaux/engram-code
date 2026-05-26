@@ -110,6 +110,25 @@ export function makePrismaPassRunRecorder(
 export interface SubmitInput {
   url: string;
   ref?: string;
+  /**
+   * EC-49: optional trigger attribution. When set, every `pass_runs` row
+   * for this job carries the trigger source in `metadata.trigger` so the
+   * dashboard can answer "what fired this synth?" without log archaeology.
+   */
+  trigger?: IngestTrigger;
+}
+
+/**
+ * Why this run started. `manual` is the default for raw API submissions;
+ * the cron + webhook + post-commit hook stamp the appropriate kind so
+ * the ledger captures the actual driver.
+ */
+export interface IngestTrigger {
+  source: 'manual' | 'cron' | 'webhook' | 'hook';
+  /** Optional commit SHA the trigger asked us to settle on. */
+  sha?: string;
+  /** Free-form per-source extras (delivery id, head commit, etc.). */
+  detail?: Record<string, unknown>;
 }
 
 export interface SubmitResult {
@@ -196,6 +215,7 @@ export class IngestService implements OnModuleDestroy {
       stage: 'queued',
       progress: STAGE_PROGRESS.queued,
       startedAt: now,
+      trigger: input.trigger ?? { source: 'manual' },
     };
     this.jobs.set(id, job);
     this.activeByRepo.set(parsed.repoId, id);
@@ -310,6 +330,26 @@ export class IngestService implements OnModuleDestroy {
       }
     }
 
+    // EC-49: wrap the recorder so every row this job emits carries the
+    // trigger source in `metadata.trigger`. Manual API hits land here as
+    // `{ source: 'manual' }`; cron/webhook/hook each fill the field
+    // accordingly. Wrapping at the ingest layer keeps the change off the
+    // synth signature.
+    const baseRecorder = this.passRunRecorder ?? undefined;
+    const trigger = job.trigger ?? { source: 'manual' as const };
+    const wrappedRecorder: PassRunRecorder | undefined = baseRecorder
+      ? async (run) => {
+          const merged: PassRunInput = {
+            ...run,
+            metadata: {
+              ...(run.metadata ?? {}),
+              trigger,
+            },
+          };
+          await baseRecorder(merged);
+        }
+      : undefined;
+
     const summary = await runSynth({
       repoPath: scratchDir,
       subcommand: 'all',
@@ -323,7 +363,7 @@ export class IngestService implements OnModuleDestroy {
       // EC-47: persist one `pass_runs` row per pass. Recorder may be null
       // when a test or local CLI doesn't wire Prisma — that's fine, synth
       // still runs end-to-end.
-      onPassRun: this.passRunRecorder ?? undefined,
+      onPassRun: wrappedRecorder,
       // EC-48: per-pass + daily token caps, enforced before each pass.
       budget,
       // EC-46: incremental git-diff rescans. When the Prisma client is wired,

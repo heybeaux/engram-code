@@ -7,6 +7,7 @@ import { IngestionModule } from './ingestion/ingestion.module';
 import { CardsModule } from './v2/api/cards.module';
 import { PassRunsModule } from './v2/api/pass-runs.module';
 import { V2IngestModule } from './v2/ingest/ingest.module';
+import { SchedulerModule } from './v2/scheduler/scheduler.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { V2IngestModule } from './v2/ingest/ingest.module';
     CardsModule,
     PassRunsModule,
     V2IngestModule,
+    SchedulerModule,
   ],
 })
 export class AppModule {}

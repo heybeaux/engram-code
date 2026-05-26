@@ -50,6 +50,15 @@ export interface IngestJob {
   finishedAt?: string;
   /** Optional totals once synth completes. */
   totalTokens?: number;
+  /**
+   * EC-49: trigger attribution (cron / webhook / hook / manual). Carried
+   * through to every `pass_runs.metadata.trigger` row this job emits.
+   */
+  trigger?: {
+    source: 'manual' | 'cron' | 'webhook' | 'hook';
+    sha?: string;
+    detail?: Record<string, unknown>;
+  };
 }
 
 /** Public-facing shape returned by the ingest controller. */

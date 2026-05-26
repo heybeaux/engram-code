@@ -70,6 +70,38 @@ export const EngramConfigSchema = z
       })
       .strict()
       .optional(),
+    scheduler: z
+      .object({
+        /** Master on/off for the cron loop. Webhook + hook routes are
+         * always live when the server is up; this only gates cron. */
+        enabled: z.boolean().optional(),
+        /**
+         * Periodic ingest triggers. Each job re-ingests one GitHub URL on
+         * an interval. `intervalMs` keeps the dependency surface small —
+         * we don't ship a full cron parser for v1.
+         */
+        cron: z
+          .array(
+            z
+              .object({
+                url: z.string().min(1),
+                ref: z.string().min(1).optional(),
+                intervalMs: z.number().int().positive(),
+              })
+              .strict(),
+          )
+          .optional(),
+        webhook: z
+          .object({
+            /** HMAC-SHA256 secret shared with GitHub. Empty disables HMAC
+             * verification — only do this in trusted environments. */
+            secret: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     modules: z
       .object({
         include: z.array(z.string().min(1)).optional(),
@@ -121,6 +153,17 @@ export interface ResolvedEngramConfig {
     apiKey: string;
     batchSize: number;
     batchIntervalMs: number;
+  };
+  scheduler: {
+    enabled: boolean;
+    cron: Array<{
+      url: string;
+      ref?: string;
+      intervalMs: number;
+    }>;
+    webhook: {
+      secret: string;
+    };
   };
   modules: {
     include: string[];

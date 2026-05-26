@@ -89,10 +89,92 @@ export async function run(
       return runConfig(rest, io);
     case 'synth':
       return runSynthCommand(rest, io);
+    case 'hook':
+      return runHookCommand(rest, io);
     default:
       io.stderr(`engram-code: unknown command "${command}"\n${usage()}`);
       return EXIT.USAGE;
   }
+}
+
+/**
+ * `engram-code hook install <repo>` (EC-49).
+ *
+ * Drops `scripts/post-commit-hook.sh` into the repo's
+ * `.git/hooks/post-commit` so future commits POST to the scheduler
+ * webhook. We do not chain a pre-existing hook — if one exists we
+ * refuse without `--force` so we don't clobber user state.
+ */
+async function runHookCommand(argv: string[], io: CliIO): Promise<number> {
+  const sub = argv[0];
+  if (sub !== 'install') {
+    io.stderr(
+      'engram-code hook: usage: engram-code hook install <repo-path> [--force]\n',
+    );
+    return EXIT.USAGE;
+  }
+  const repoArg = argv[1];
+  if (!repoArg) {
+    io.stderr('engram-code hook install: <repo-path> required\n');
+    return EXIT.USAGE;
+  }
+  const force = argv.includes('--force');
+  const repoPath = resolve(repoArg);
+  const gitDir = join(repoPath, '.git');
+  let stat;
+  try {
+    stat = await fs.stat(gitDir);
+  } catch {
+    io.stderr(`engram-code hook install: ${gitDir} not found\n`);
+    return EXIT.NOT_FOUND;
+  }
+  if (!stat.isDirectory()) {
+    io.stderr(`engram-code hook install: ${gitDir} is not a directory\n`);
+    return EXIT.USAGE;
+  }
+  const hooksDir = join(gitDir, 'hooks');
+  await fs.mkdir(hooksDir, { recursive: true });
+  const target = join(hooksDir, 'post-commit');
+  if (!force) {
+    try {
+      await fs.access(target);
+      io.stderr(
+        `engram-code hook install: ${target} already exists; pass --force to overwrite\n`,
+      );
+      return EXIT.USAGE;
+    } catch {
+      // not present, proceed
+    }
+  }
+  // Source script ships under `scripts/` next to this package. Resolve
+  // relative to __dirname so the installed CLI finds it whether running
+  // from source or from `dist/`.
+  const source = await locateHookScript(io);
+  if (source === null) return EXIT.RUNTIME;
+  const body = await fs.readFile(source, 'utf8');
+  await fs.writeFile(target, body, { mode: 0o755 });
+  io.stdout(`engram-code: installed post-commit hook at ${target}\n`);
+  return EXIT.OK;
+}
+
+async function locateHookScript(io: CliIO): Promise<string | null> {
+  const candidates = [
+    join(__dirname, '..', '..', '..', 'scripts', 'post-commit-hook.sh'),
+    join(__dirname, '..', '..', '..', '..', 'scripts', 'post-commit-hook.sh'),
+    resolve(process.cwd(), 'scripts', 'post-commit-hook.sh'),
+  ];
+  for (const c of candidates) {
+    try {
+      await fs.access(c);
+      return c;
+    } catch {
+      // try next
+    }
+  }
+  io.stderr(
+    'engram-code hook install: could not locate scripts/post-commit-hook.sh\n',
+  );
+  return null;
 }
 
 function usage(): string {
@@ -105,6 +187,7 @@ function usage(): string {
     '  engram-code config show <repo-path> [--config=<file>]',
     '  engram-code synth <repo-path> [--out=<dir>] [--repo-id=<id>] [--dry-run]',
     '  engram-code synth contracts|gotchas|subsystem|repository|hotspots <repo-path> [...flags]',
+    '  engram-code hook install <repo-path> [--force]',
     '',
     'Options:',
     '  --out=<dir>     Artifacts root (default: <repo>/.engram/artifacts)',
