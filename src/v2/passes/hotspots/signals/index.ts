@@ -12,4 +12,12 @@ export {
   type GitChurnOptions,
   type GitExec,
 } from './git-churn';
-export type { GitChurnSignal } from '../types';
+export { collectInDegree, type InDegreeOptions } from './in-degree';
+export { collectComplexity, type ComplexityOptions } from './complexity';
+export { collectCoverage, type CoverageOptions } from './coverage';
+export type {
+  GitChurnSignal,
+  InDegreeSignal,
+  ComplexitySignal,
+  CoverageSignal,
+} from '../types';
