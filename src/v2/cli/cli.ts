@@ -104,7 +104,7 @@ function usage(): string {
     '  engram-code cards <conceptPath> [--lod=summary] [--root=<dir>]',
     '  engram-code config show <repo-path> [--config=<file>]',
     '  engram-code synth <repo-path> [--out=<dir>] [--repo-id=<id>] [--dry-run]',
-    '  engram-code synth contracts|gotchas|subsystem|repository <repo-path> [...flags]',
+    '  engram-code synth contracts|gotchas|subsystem|repository|hotspots <repo-path> [...flags]',
     '',
     'Options:',
     '  --out=<dir>     Artifacts root (default: <repo>/.engram/artifacts)',
