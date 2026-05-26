@@ -25,6 +25,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ConfigError, loadConfig } from '../config';
 import { runStructurePass } from '../passes/structure/orchestrator';
 import type { StructurePassResult } from '../passes/structure/orchestrator';
+import { registerElixirExtractor } from '../parsers/elixir.extractor';
 import { registerGoExtractor } from '../parsers/go.extractor';
 import { registerPythonExtractor } from '../parsers/python.extractor';
 import { registerTypeScriptExtractor } from '../parsers/typescript.extractor';
@@ -334,6 +335,7 @@ function ensureExtractorsRegistered(): void {
   registerTypeScriptExtractor();
   registerPythonExtractor();
   registerGoExtractor();
+  registerElixirExtractor();
   extractorsRegistered = true;
 }
 

@@ -53,6 +53,9 @@ importers:
       tree-sitter:
         specifier: ^0.25.0
         version: 0.25.0
+      tree-sitter-elixir:
+        specifier: ^0.3.5
+        version: 0.3.5(tree-sitter@0.25.0)
       tree-sitter-go:
         specifier: ^0.25.0
         version: 0.25.0(tree-sitter@0.25.0)
@@ -3678,6 +3681,9 @@ packages:
   node-abort-controller@3.1.1:
     resolution: {integrity: sha512-AGK2yQKIjRuqnc6VkX2Xj5d+QW8xZ87pa1UK6yA6ouUyuxfHuMP6umE5QK7UmTeOAymo+Zx1Fxiuw9rVx8taHQ==}
 
+  node-addon-api@7.1.1:
+    resolution: {integrity: sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ==}
+
   node-addon-api@8.8.0:
     resolution: {integrity: sha512-c5Ko1fZJIJmzhFIkhRN76WTq+fC6tWnGy9CXA0fA+XygsWZmEwG8vmbkNqxMyoaa0Tin4djul49NzdVcJJcjeA==}
     engines: {node: ^18 || ^20 || >= 21}
@@ -4451,6 +4457,11 @@ packages:
   tr46@6.0.0:
     resolution: {integrity: sha512-bLVMLPtstlZ4iMQHpFHTR7GAGj2jxi8Dg0s2h2MafAE4uSWF98FC/3MomU51iQAMf8/qDUbKWf5GxuvvVcXEhw==}
     engines: {node: '>=20'}
+
+  tree-sitter-elixir@0.3.5:
+    resolution: {integrity: sha512-xozQMvYK0aSolcQZAx2d84Xe/YMWFuRPYFlLVxO01bM2GITh5jyiIp0TqPCQa8754UzRAI7A83hZmfiYub5TZQ==}
+    peerDependencies:
+      tree-sitter: ^0.21.0
 
   tree-sitter-go@0.25.0:
     resolution: {integrity: sha512-APBc/Dq3xz/e35Xpkhb1blu5UgW+2E3RyGWawZSCNcbGwa7jhSQPS8KsUupuzBla8PCo8+lz9W/JDJjmfRa2tw==}
@@ -8749,6 +8760,8 @@ snapshots:
 
   node-abort-controller@3.1.1: {}
 
+  node-addon-api@7.1.1: {}
+
   node-addon-api@8.8.0: {}
 
   node-emoji@1.11.0:
@@ -9598,6 +9611,12 @@ snapshots:
   tr46@6.0.0:
     dependencies:
       punycode: 2.3.1
+
+  tree-sitter-elixir@0.3.5(tree-sitter@0.25.0):
+    dependencies:
+      node-addon-api: 7.1.1
+      node-gyp-build: 4.8.4
+      tree-sitter: 0.25.0
 
   tree-sitter-go@0.25.0(tree-sitter@0.25.0):
     dependencies:

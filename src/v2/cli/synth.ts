@@ -57,6 +57,7 @@ import {
   type GotchasPassResult,
 } from '../passes/gotchas/orchestrator';
 import { writeGotchasArtifacts } from '../passes/gotchas/writer';
+import { registerElixirExtractor } from '../parsers/elixir.extractor';
 import { registerGoExtractor } from '../parsers/go.extractor';
 import { registerPythonExtractor } from '../parsers/python.extractor';
 import { registerTypeScriptExtractor } from '../parsers/typescript.extractor';
@@ -216,6 +217,7 @@ function ensureExtractorsRegistered(): void {
   registerTypeScriptExtractor();
   registerPythonExtractor();
   registerGoExtractor();
+  registerElixirExtractor();
   extractorsRegistered = true;
 }
 
